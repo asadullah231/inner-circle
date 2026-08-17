@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+.pnpm-store/
+dist/
+build/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# Local runtime artifacts
+.data/
+downloads/
+clips/
+*.mp4
+*.mkv
+*.webm
+*.wav
+*.mp3
+logs/
+*.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
