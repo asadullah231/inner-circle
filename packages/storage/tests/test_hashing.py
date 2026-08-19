@@ -4,7 +4,7 @@ import hashlib
 import io
 import os
 
-from app.storage import hashing, paths
+from packages.storage import hashing, paths
 
 
 def test_hash_file_matches_hashlib(tmp_path):

@@ -9,8 +9,8 @@ These tests need no MinIO, no network and no ffmpeg.
 
 import pytest
 
-from app.storage import paths
-from app.storage.errors import UnsafePathError, UnsupportedFileTypeError
+from packages.storage import paths
+from packages.storage.errors import UnsafePathError, UnsupportedFileTypeError
 
 SHA = "a" * 64
 
