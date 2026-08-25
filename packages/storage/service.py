@@ -14,7 +14,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import hashing, paths, staging
+from . import hashing, paths, retention, staging
 from .client import MediaStore
 from .config import load_settings
 from .errors import StorageError
@@ -178,3 +178,47 @@ def package(req: PackageRequest) -> dict:
 @app.get("/v1/renders/new-id")
 def new_render_id() -> dict:
     return {"render_id": paths.new_render_id()}
+
+
+
+# --- retention --------------------------------------------------------------
+
+
+class CleanupRequest(BaseModel):
+    in_use_keys: list[str] = Field(default_factory=list)
+    dry_run: bool = Field(True)
+
+
+@app.post("/v1/retention/cleanup")
+def cleanup(req: CleanupRequest) -> dict:
+    """Find (and optionally delete) expired assets.
+
+    Renders, thumbnails, manifests and captions are never touched.
+    """
+    policy = retention.RetentionPolicy.from_settings(settings)
+    return retention.run_cleanup(
+        store, policy, in_use_keys=req.in_use_keys, dry_run=req.dry_run
+    )
+
+
+@app.post("/v1/retention/lifecycle")
+def apply_lifecycle() -> dict:
+    """Apply expiry rules to the temp and uploads buckets."""
+    policy = retention.RetentionPolicy.from_settings(settings)
+    return {"applied": retention.apply_lifecycle_rules(store, policy)}
+
+
+@app.get("/v1/retention/policy")
+def retention_policy() -> dict:
+    policy = retention.RetentionPolicy.from_settings(settings)
+    return {
+        "tmp_days": policy.tmp_days,
+        "uploads_days": policy.uploads_days,
+        "asset_days": policy.asset_days,
+        "max_deletions_per_run": policy.max_deletions_per_run,
+        "signed_url_ttl_s": {
+            "preview": settings.ttl_preview_s,
+            "download": settings.ttl_download_s,
+            "worker": settings.ttl_worker_s,
+        },
+    }

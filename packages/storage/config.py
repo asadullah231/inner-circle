@@ -2,6 +2,10 @@
 
 All values come from environment variables. Nothing is hard-coded, and no
 secret is ever returned by an endpoint or written to a log.
+
+Signed URL lifetimes and retention windows are the team-approved values:
+preview 30 min, download 5 hours, temp 1 day, uploads 7 days,
+source media 30 days, renders permanent.
 """
 
 import os
@@ -50,6 +54,12 @@ class Settings:
     ttl_worker_s: int
     ttl_upload_s: int
 
+    # --- retention windows (days) ---
+    retention_tmp_days: int
+    retention_uploads_days: int
+    retention_asset_days: int
+    retention_max_deletions: int
+
     # --- local paths ---
     ffprobe_path: str
     workspace_root: str
@@ -72,10 +82,16 @@ def load_settings() -> Settings:
         s3_tmp_bucket=_env("S3_TMP_BUCKET", "avg-tmp"),
         s3_region=_env("S3_REGION", "us-east-1"),
         s3_secure=_env_bool("S3_SECURE", False),
-        ttl_preview_s=_env_int("SIGNED_URL_TTL_PREVIEW_S", 900),
-        ttl_download_s=_env_int("SIGNED_URL_TTL_DOWNLOAD_S", 3600),
+        # 30 minutes
+        ttl_preview_s=_env_int("SIGNED_URL_TTL_PREVIEW_S", 1800),
+        # 5 hours
+        ttl_download_s=_env_int("SIGNED_URL_TTL_DOWNLOAD_S", 18000),
         ttl_worker_s=_env_int("SIGNED_URL_TTL_WORKER_S", 1800),
         ttl_upload_s=_env_int("SIGNED_URL_TTL_UPLOAD_S", 900),
+        retention_tmp_days=_env_int("RETENTION_TMP_DAYS", 1),
+        retention_uploads_days=_env_int("RETENTION_UPLOADS_DAYS", 7),
+        retention_asset_days=_env_int("RETENTION_ASSET_DAYS", 30),
+        retention_max_deletions=_env_int("RETENTION_MAX_DELETIONS", 500),
         ffprobe_path=_env("FFPROBE_PATH", "ffprobe"),
         workspace_root=_env("WORKSPACE_ROOT", "/workspace"),
     )
