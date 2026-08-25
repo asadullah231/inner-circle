@@ -58,8 +58,15 @@ MAX_SIZE_BYTES: dict[str, int] = {
 }
 
 CATEGORIES = frozenset(
-    {"source", "assets", "audio", "captions", "renders", "thumbs", "manifests"}
+    {"source", "audio", "captions", "renders", "thumbs", "manifests"}
 )
+
+# Assets live OUTSIDE any project. Deduplication is global — the same clip used
+# in three projects is stored once — so an asset must not sit under one
+# project's prefix. If it did, deleting or expiring that project would remove a
+# file the other two are still using. Which project uses which asset is
+# recorded in the database, not in the path.
+ASSET_PREFIX = "assets"
 
 
 # --- validation -------------------------------------------------------------
@@ -136,11 +143,20 @@ def asset_filename(sha256_hex: str, extension: str) -> str:
     return f"a_{sha256_hex[:16]}{extension}"
 
 
-def asset_key(project_id: str, beat_id: str, sha256_hex: str, extension: str) -> str:
-    validate_id(beat_id, "beat_id")
-    return _category_key(
-        project_id, "assets", beat_id, asset_filename(sha256_hex, extension)
-    )
+def asset_key(sha256_hex: str, extension: str) -> str:
+    """Global, content-addressed key for a media asset.
+
+        assets/9f/a_9f2c4e1b7d0a5c33.mp4
+
+    Sharded by the first two hex characters so no single prefix ends up
+    holding every asset in the system.
+
+    Deliberately not scoped to a project: dedup is global, so one project
+    must never own the only copy of a file another project is using.
+    """
+    filename = asset_filename(sha256_hex, extension)
+    shard = sha256_hex[:2]
+    return assert_safe_key(posixpath.join(ASSET_PREFIX, shard, filename))
 
 
 def source_key(project_id: str, filename: str) -> str:

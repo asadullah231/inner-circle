@@ -46,7 +46,7 @@ def test_malicious_project_ids_are_rejected(bad_id):
 @pytest.mark.parametrize("bad_id", ATTACK_IDS)
 def test_malicious_beat_ids_are_rejected(bad_id):
     with pytest.raises(UnsafePathError):
-        paths.asset_key("proj_123", bad_id, SHA, ".mp4")
+        paths.validate_id(bad_id, "beat_id")
 
 
 def test_traversal_in_filename_cannot_escape():
@@ -120,14 +120,24 @@ def test_double_extension_uses_the_last_one():
 
 
 def test_asset_key_is_content_addressed():
-    key = paths.asset_key("proj_123", "beat_001", SHA, ".mp4")
-    assert key == "projects/proj_123/assets/beat_001/a_aaaaaaaaaaaaaaaa.mp4"
+    key = paths.asset_key(SHA, ".mp4")
+    assert key == "assets/aa/a_aaaaaaaaaaaaaaaa.mp4"
+
+
+def test_asset_key_is_not_scoped_to_a_project():
+    """Dedup is global, so one project must not own the only copy of a file
+    another project is using."""
+    key = paths.asset_key(SHA, ".mp4")
+    assert not key.startswith("projects/")
+    assert "proj" not in key
 
 
 def test_same_bytes_produce_the_same_key():
-    a = paths.asset_key("proj_123", "beat_001", SHA, ".mp4")
-    b = paths.asset_key("proj_123", "beat_001", SHA, ".mp4")
-    assert a == b
+    assert paths.asset_key(SHA, ".mp4") == paths.asset_key(SHA, ".mp4")
+
+
+def test_different_bytes_produce_different_keys():
+    assert paths.asset_key(SHA, ".mp4") != paths.asset_key("b" * 64, ".mp4")
 
 
 def test_asset_filename_rejects_bad_hash():

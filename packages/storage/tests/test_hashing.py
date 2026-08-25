@@ -31,9 +31,7 @@ def test_identical_files_produce_identical_keys(tmp_path):
     hb = hashing.hash_file(str(b))
     assert ha == hb
 
-    key_a = paths.asset_key("proj_1", "beat_001", ha, ".mp4")
-    key_b = paths.asset_key("proj_1", "beat_001", hb, ".mp4")
-    assert key_a == key_b
+    assert paths.asset_key(ha, ".mp4") == paths.asset_key(hb, ".mp4")
 
 
 def test_different_files_produce_different_keys(tmp_path):
@@ -41,8 +39,8 @@ def test_different_files_produce_different_keys(tmp_path):
     b = tmp_path / "b.mp4"
     a.write_bytes(b"clip one")
     b.write_bytes(b"clip two")
-    ka = paths.asset_key("proj_1", "beat_001", hashing.hash_file(str(a)), ".mp4")
-    kb = paths.asset_key("proj_1", "beat_001", hashing.hash_file(str(b)), ".mp4")
+    ka = paths.asset_key(hashing.hash_file(str(a)), ".mp4")
+    kb = paths.asset_key(hashing.hash_file(str(b)), ".mp4")
     assert ka != kb
 
 

@@ -26,13 +26,14 @@ def days_ago(n: float) -> datetime:
 @pytest.mark.parametrize(
     "key,expected",
     [
-        ("projects/p1/assets/beat_001/a_abc.mp4", "assets"),
+        ("assets/9f/a_9f2c4e1b7d0a5c33.mp4", "assets"),
         ("projects/p1/renders/r_20260819T1200Z/final.mp4", "renders"),
         ("projects/p1/source/script.txt", "source"),
         ("projects/p1/audio/narration.wav", "audio"),
         ("projects/p1/manifests/r_1/manifest.json", "manifests"),
         ("not-a-project-key", None),
         ("projects/p1", None),
+        ("assets/9f", None),
         ("", None),
     ],
 )
@@ -59,7 +60,7 @@ def test_finished_output_is_protected(key):
 @pytest.mark.parametrize(
     "key",
     [
-        "projects/p1/assets/beat_001/a_abc.mp4",
+        "assets/9f/a_9f2c4e1b7d0a5c33.mp4",
         "projects/p1/source/script.txt",
         "projects/p1/audio/narration.wav",
     ],
@@ -70,7 +71,7 @@ def test_working_files_are_cleanable(key):
 
 @pytest.mark.parametrize(
     "key",
-    ["random/thing.mp4", "projects/p1/unknowncategory/x.mp4", "", "projects"],
+    ["random/thing.mp4", "projects/p1/unknowncategory/x.mp4", "", "projects", "assets/9f"],
 )
 def test_unrecognised_keys_fail_closed(key):
     """Anything we do not recognise is protected, never deleted."""
@@ -88,22 +89,22 @@ def test_protected_key_is_never_deleted_even_when_ancient():
 
 
 def test_old_unused_asset_is_deleted():
-    key = "projects/p1/assets/beat_001/a_abc.mp4"
+    key = "assets/9f/a_9f2c4e1b7d0a5c33.mp4"
     assert retention.should_delete(key, days_ago(31), NOW, POLICY, frozenset()) is True
 
 
 def test_recent_asset_is_kept():
-    key = "projects/p1/assets/beat_001/a_abc.mp4"
+    key = "assets/9f/a_9f2c4e1b7d0a5c33.mp4"
     assert retention.should_delete(key, days_ago(29), NOW, POLICY, frozenset()) is False
 
 
 def test_asset_exactly_at_boundary_is_kept():
-    key = "projects/p1/assets/beat_001/a_abc.mp4"
+    key = "assets/9f/a_9f2c4e1b7d0a5c33.mp4"
     assert retention.should_delete(key, days_ago(30), NOW, POLICY, frozenset()) is False
 
 
 def test_in_use_asset_is_kept_however_old():
-    key = "projects/p1/assets/beat_001/a_abc.mp4"
+    key = "assets/9f/a_9f2c4e1b7d0a5c33.mp4"
     assert (
         retention.should_delete(key, days_ago(500), NOW, POLICY, frozenset({key}))
         is False
@@ -120,21 +121,21 @@ def test_naive_timestamp_is_treated_as_utc():
 
 def test_select_expired_picks_only_eligible_keys():
     objects = [
-        ("projects/p1/assets/b1/a_old.mp4", days_ago(60)),
-        ("projects/p1/assets/b2/a_new.mp4", days_ago(2)),
+        ("assets/11/a_1111111111111111.mp4", days_ago(60)),
+        ("assets/22/a_2222222222222222.mp4", days_ago(2)),
         ("projects/p1/renders/r_1/final.mp4", days_ago(400)),
-        ("projects/p1/assets/b3/a_inuse.mp4", days_ago(90)),
+        ("assets/33/a_3333333333333333.mp4", days_ago(90)),
     ]
     result = retention.select_expired(
-        objects, POLICY, in_use_keys=["projects/p1/assets/b3/a_inuse.mp4"], now=NOW
+        objects, POLICY, in_use_keys=["assets/33/a_3333333333333333.mp4"], now=NOW
     )
-    assert result == ["projects/p1/assets/b1/a_old.mp4"]
+    assert result == ["assets/11/a_1111111111111111.mp4"]
 
 
 def test_select_expired_respects_the_cap():
     policy = RetentionPolicy(max_deletions_per_run=3)
     objects = [
-        (f"projects/p1/assets/b{i}/a_{i}.mp4", days_ago(100)) for i in range(50)
+        (f"assets/{i:02d}/a_{i:016d}.mp4", days_ago(100)) for i in range(50)
     ]
     result = retention.select_expired(objects, policy, now=NOW)
     assert len(result) == 3

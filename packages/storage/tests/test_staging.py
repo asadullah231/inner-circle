@@ -69,10 +69,27 @@ def test_stage_asset_key_is_content_addressed(store, sample_video):
     record = staging.stage_asset(
         store, "proj_1", "beat_001", sample_video, "pexels-cat-12345.mp4"
     )
-    expected = paths.asset_key("proj_1", "beat_001", record["file_hash"], ".mp4")
+    expected = paths.asset_key(record["file_hash"], ".mp4")
     assert record["storage_key"] == expected
     # The provider's filename must not survive into the key.
     assert "pexels" not in record["storage_key"]
+
+
+def test_staged_asset_is_not_scoped_to_a_project(store, sample_video):
+    """Dedup is global. If assets sat under one project's prefix, deleting or
+    expiring that project would remove a file other projects still use."""
+    record = staging.stage_asset(store, "proj_1", "beat_001", sample_video, "c.mp4")
+    assert record["storage_key"].startswith("assets/")
+    assert "proj_1" not in record["storage_key"]
+
+
+def test_the_same_file_in_two_projects_is_stored_once(store, sample_video):
+    a = staging.stage_asset(store, "proj_A", "beat_001", sample_video, "cat.mp4")
+    b = staging.stage_asset(store, "proj_B", "beat_009", sample_video, "cat.mp4")
+
+    assert a["storage_key"] == b["storage_key"]
+    assert b["deduplicated"] is True
+    assert store.put_calls == 1, "the same clip was stored twice"
 
 
 def test_staging_the_same_file_twice_does_not_upload_twice(store, sample_video):
@@ -110,6 +127,11 @@ def test_stage_asset_rejects_a_disallowed_extension(store, sample_video):
 def test_stage_asset_rejects_an_unsafe_beat_id(store, sample_video):
     with pytest.raises(StorageError):
         staging.stage_asset(store, "proj_1", "../../etc", sample_video, "clip.mp4")
+
+
+def test_stage_asset_rejects_an_unsafe_project_id(store, sample_video):
+    with pytest.raises(StorageError):
+        staging.stage_asset(store, "../../etc", "beat_001", sample_video, "clip.mp4")
 
 
 # --- render workspace -------------------------------------------------------
@@ -177,7 +199,7 @@ def test_render_fails_before_starting_if_an_asset_is_missing(store, sample_video
             _spec(),
             {
                 "beat_001": record["storage_key"],
-                "beat_002": "projects/proj_1/assets/beat_002/a_deadbeefdeadbeef.mp4",
+                "beat_002": "assets/de/a_deadbeefdeadbeef.mp4",
             },
         )
     assert "beat_002" in str(exc.value)
@@ -192,8 +214,8 @@ def test_missing_assets_are_all_reported_at_once(store):
             render_id,
             _spec(),
             {
-                "beat_001": "projects/proj_1/assets/beat_001/a_1111111111111111.mp4",
-                "beat_002": "projects/proj_1/assets/beat_002/a_2222222222222222.mp4",
+                "beat_001": "assets/11/a_1111111111111111.mp4",
+                "beat_002": "assets/22/a_2222222222222222.mp4",
             },
         )
     message = str(exc.value)

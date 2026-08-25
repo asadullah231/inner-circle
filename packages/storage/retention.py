@@ -36,10 +36,11 @@ from typing import Iterable, Optional
 
 log = logging.getLogger("retention")
 
-# Prefixes under projects/{id}/ that must never be auto-deleted.
+# Categories under projects/{id}/ that must never be auto-deleted.
 PROTECTED_CATEGORIES = frozenset({"renders", "thumbs", "manifests", "captions"})
 
-# Prefixes the cleanup job is allowed to consider.
+# Categories the cleanup job is allowed to consider.
+# "assets" here refers to the global assets/ prefix, not a project subfolder.
 CLEANABLE_CATEGORIES = frozenset({"assets", "source", "audio"})
 
 
@@ -64,16 +65,26 @@ class RetentionPolicy:
 
 
 def category_of(key: str) -> Optional[str]:
-    """Return the category segment of a project key, or None if not a project key.
+    """Classify a storage key, or return None if the shape is unrecognised.
 
-    projects/proj_123/assets/beat_001/a_abc.mp4  ->  "assets"
+    assets/9f/a_9f2c4e1b.mp4              ->  "assets"
+    projects/proj_123/renders/r_1/f.mp4   ->  "renders"
+
+    Assets are global rather than project-scoped, because dedup is global.
+    Everything else lives under a project.
     """
     if not key:
         return None
     parts = key.split("/")
-    if len(parts) < 3 or parts[0] != "projects":
-        return None
-    return parts[2]
+
+    if parts[0] == "assets":
+        # assets/<shard>/<filename>
+        return "assets" if len(parts) == 3 else None
+
+    if parts[0] == "projects" and len(parts) >= 4:
+        return parts[2]
+
+    return None
 
 
 def is_protected(key: str) -> bool:
@@ -188,12 +199,14 @@ def apply_lifecycle_rules(store, policy: RetentionPolicy) -> dict:
 def list_cleanable_objects(store) -> list[tuple[str, datetime]]:
     """List every object in the media bucket that the cleanup job may consider."""
     results: list[tuple[str, datetime]] = []
-    for obj in store.client.list_objects(
-        store.settings.s3_bucket, prefix="projects/", recursive=True
-    ):
-        if is_protected(obj.object_name):
-            continue
-        results.append((obj.object_name, obj.last_modified))
+    # Two prefixes now: global assets, and per-project working files.
+    for prefix in ("assets/", "projects/"):
+        for obj in store.client.list_objects(
+            store.settings.s3_bucket, prefix=prefix, recursive=True
+        ):
+            if is_protected(obj.object_name):
+                continue
+            results.append((obj.object_name, obj.last_modified))
     return results
 
 

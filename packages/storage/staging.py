@@ -56,9 +56,13 @@ def stage_asset(
     Returns the AssetRecord fields this layer owns (contract §9).
     Safe to call twice for the same file: the second call is a no-op.
     """
+    paths.validate_id(project_id, "project_id")
+    paths.validate_id(beat_id, "beat_id")
     ext, kind = paths.classify_extension(original_filename)
     sha = hashing.hash_file(local_path)
-    key = paths.asset_key(project_id, beat_id, sha, ext)
+    # Global key: the same bytes get the same key no matter which project or
+    # beat asked for them.
+    key = paths.asset_key(sha, ext)
 
     already_present = store.exists(key)
     info = probe(local_path, store.settings.ffprobe_path)
