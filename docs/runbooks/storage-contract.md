@@ -34,41 +34,47 @@ against S3-compatible storage, switched only by `S3_ENDPOINT`.
 
 ## 2. Path scheme
 
-All object keys follow this shape. **No exceptions.**
+Project working files follow this shape:
 
 ```
 projects/{project_id}/{category}/{filename}
 ```
 
-### Categories
+**Sourced/staged assets are the one deliberate exception — they are global, not
+project-scoped (see below).**
+
+### Project categories
 
 | Category | Example key | Written by |
 |---|---|---|
 | `source` | `projects/proj_123/source/script.txt` | API (user upload) |
-| `assets` | `projects/proj_123/assets/beat_001/a_9f2c4e1b.mp4` | Media staging worker |
 | `audio` | `projects/proj_123/audio/narration.wav` | Audio worker |
 | `captions` | `projects/proj_123/captions/narration.srt` | Audio worker |
-| `renders` | `projects/proj_123/renders/r_20260817T1030Z/final.mp4` | Render worker |
-| `thumbs` | `projects/proj_123/thumbs/r_20260817T1030Z/thumb.jpg` | Render worker |
-| `manifests` | `projects/proj_123/manifests/r_20260817T1030Z/manifest.json` | Render worker |
+| `renders` | `projects/proj_123/renders/r_20260817T103000Z/final.mp4` | Render worker |
+| `thumbs` | `projects/proj_123/thumbs/r_20260817T103000Z/thumb.jpg` | Render worker |
+| `manifests` | `projects/proj_123/manifests/r_20260817T103000Z/manifest.json` | Render worker |
 
-### Content-addressed assets (deduplication)
+### Content-addressed assets (deduplication) — GLOBAL
 
 Sourced/downloaded assets are named from their SHA-256 hash, not from the
-provider's filename:
+provider's filename, and they live under a **global** prefix, sharded by the
+first two hex characters of the hash:
 
 ```
-a_{first16charsOfSha256}.{ext}
+assets/{first 2 hex}/a_{first 16 hex of sha256}.{ext}
 ```
 
-Example: `a_9f2c4e1b7d0a5c33.mp4`
+Example: `assets/9f/a_9f2c4e1b7d0a5c33.mp4`
 
-**Reason:** the same Pexels clip used in three projects is downloaded and stored
-once. Provider filenames are unstable, unsafe and often collide.
+**Why global, not `projects/{id}/assets/...`:** dedup is global — the same
+Pexels clip used in three projects is stored once. If that single copy sat under
+one project's prefix, deleting or expiring that project would break the other
+two. Which project uses which asset is recorded in the database, not in the
+path. The shard keeps any one prefix from holding every asset in the system.
 
 ### Render IDs
 
-`r_{UTC timestamp, compact ISO}` — e.g. `r_20260817T1030Z`.
+`r_{UTC timestamp, compact ISO}` — e.g. `r_20260817T103000Z`.
 Renders are **immutable**. A re-render creates a new `render_id`. We never
 overwrite a previous render, because §12 Phase 4 requires reproducing a prior
 render from its manifest.
@@ -110,8 +116,8 @@ Private media is never public. Access is via time-limited signed URLs.
 
 | Use | TTL | Method |
 |---|---|---|
-| Dashboard preview (contact sheet, Player) | **15 minutes** | GET |
-| Final render download | **60 minutes** | GET |
+| Dashboard preview (contact sheet, Player) | **30 minutes** | GET |
+| Final render download | **5 hours** | GET |
 | Worker-to-worker fetch | **30 minutes** | GET |
 | Browser direct upload | **15 minutes** | PUT |
 
@@ -123,9 +129,11 @@ Rules:
 - A signed URL is issued only after the API has checked RBAC. This layer trusts
   the caller's authorization decision; it does not implement RBAC itself.
 
-> **OPEN QUESTION for Hamza / security owner:** the delivery plan does not state
-> TTL or retention numbers anywhere. The values above are my proposal. Please
-> confirm or correct before Phase 1 exit.
+> **Status:** these are the team-approved values and are what the code issues
+> today (see §12 for the env vars and defaults). They live in config, so ops can
+> change them without a code change. Preview was widened from 15→30 min and
+> download from 60 min→5 hours versus the original draft; flagging that here so
+> the change is on the record. If security wants them tightened, say so.
 
 ---
 
@@ -163,14 +171,19 @@ language choice (§4 leaves FastAPI vs NestJS open).
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `POST` | `/v1/uploads` | Upload a file, hash it, dedup, store. Returns key + metadata. |
-| `POST` | `/v1/assets/stage` | Stage a downloaded provider asset for a beat. Returns AssetRecord fields. |
-| `POST` | `/v1/signed-url` | Issue a time-limited GET or PUT URL for a known key. |
-| `GET` | `/v1/objects/{key}/meta` | Size, content type, hash, created time. |
-| `POST` | `/v1/renders/{project_id}/package` | Store the final MP4 + thumb + captions + manifest as one immutable render. |
-| `GET` | `/healthz` | Liveness + MinIO reachability. |
+| `GET`  | `/healthz` | Liveness + MinIO reachability. |
+| `POST` | `/v1/uploads` | Upload a source file (multipart). Hash, dedup, store. Returns key + metadata. |
+| `POST` | `/v1/assets/stage` | Stage a downloaded provider asset. Returns the AssetRecord fields this layer owns. |
+| `POST` | `/v1/signed-url` | Issue a time-limited **GET** URL for a known key (`purpose`: preview / download / worker). |
+| `GET`  | `/v1/objects/meta?key=...` | Size, content type, hash (etag), last-modified for a key. |
+| `GET`  | `/v1/renders/new-id` | Mint a fresh, immutable `render_id`. |
+| `POST` | `/v1/renders/package` | Store the final MP4 + thumb + captions + manifest as one immutable render. |
+| `POST` | `/v1/retention/cleanup` | Find (and, only with `dry_run=false`, delete) expired staged assets. |
+| `POST` | `/v1/retention/lifecycle` | Apply bucket expiry rules to the tmp and uploads buckets. |
+| `GET`  | `/v1/retention/policy` | Report the active retention windows and signed-URL TTLs. |
 
-Every response includes `request_id` for tracing.
+The signed **PUT** upload URL (`signed_put_url`) exists in the client but is not
+yet wired to an HTTP endpoint. Every response includes `request_id` for tracing.
 
 ---
 
@@ -226,17 +239,23 @@ This is what makes beat-level retry safe (§12 Phase 3).
 
 ## 12. Configuration
 
-| Variable | Meaning |
-|---|---|
-| `S3_ENDPOINT` | MinIO/S3 endpoint URL |
-| `S3_BUCKET` | Primary media bucket |
-| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Credentials — server-side only, never in browser |
-| `S3_REGION` | Region string (MinIO accepts any) |
-| `S3_SECURE` | `true` in production (https) |
-| `SIGNED_URL_TTL_PREVIEW_S` | Default 900 |
-| `SIGNED_URL_TTL_DOWNLOAD_S` | Default 3600 |
-| `FFPROBE_PATH` | Path to ffprobe binary |
-| `WORKSPACE_ROOT` | Local staging root for render workers |
+| Variable | Meaning | Default |
+|---|---|---|
+| `S3_ENDPOINT` | MinIO/S3 endpoint URL | `http://localhost:9000` |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Credentials — server-side only, never in browser | *(required)* |
+| `S3_BUCKET` | Primary media bucket | `avg-media` |
+| `S3_UPLOADS_BUCKET` | Raw uploads bucket | `avg-uploads` |
+| `S3_TMP_BUCKET` | Worker scratch bucket | `avg-tmp` |
+| `S3_REGION` | Region string (MinIO accepts any) | `us-east-1` |
+| `S3_SECURE` | `true` in production (https) | `false` |
+| `SIGNED_URL_TTL_PREVIEW_S` | Preview GET TTL (seconds) | `1800` |
+| `SIGNED_URL_TTL_DOWNLOAD_S` | Download GET TTL (seconds) | `18000` |
+| `SIGNED_URL_TTL_WORKER_S` | Worker GET TTL (seconds) | `1800` |
+| `SIGNED_URL_TTL_UPLOAD_S` | Upload PUT TTL (seconds) | `900` |
+| `RETENTION_TMP_DAYS` / `RETENTION_UPLOADS_DAYS` / `RETENTION_ASSET_DAYS` | Retention windows (days) | `1` / `7` / `30` |
+| `RETENTION_MAX_DELETIONS` | Hard cap on deletions per cleanup run | `500` |
+| `FFPROBE_PATH` | Path to ffprobe binary | `ffprobe` |
+| `WORKSPACE_ROOT` | Local staging root for render workers | `/workspace` |
 
 Credentials are never returned by any endpoint and never logged.
 
