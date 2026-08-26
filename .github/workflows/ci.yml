@@ -34,3 +34,37 @@ jobs:
           if [ -f packages/storage/requirements.txt ]; then pip install -r packages/storage/requirements.txt; fi
       - name: Run tests
         run: pytest -v
+
+  storage-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=avgadmin \
+            -e MINIO_ROOT_PASSWORD=avgadmin-integration-secret \
+            minio/minio server /data
+      - name: Wait for MinIO to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then
+              echo "minio ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "minio did not become ready"; docker logs minio; exit 1
+      - name: Install dependencies
+        run: pip install -r packages/storage/requirements.txt
+      - name: Run storage integration tests
+        env:
+          RUN_STORAGE_INTEGRATION: "1"
+          S3_ENDPOINT: http://127.0.0.1:9000
+          S3_ACCESS_KEY: avgadmin
+          S3_SECRET_KEY: avgadmin-integration-secret
+          S3_SECURE: "false"
+        run: pytest -v -m integration packages/storage/tests/test_integration.py

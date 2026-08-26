@@ -4,7 +4,8 @@ FakeStore is an in-memory stand-in for MediaStore. It lets the staging and
 render-packaging logic be tested with no MinIO, no network and no credentials,
 so these tests run everywhere including CI.
 
-The real MinIO round-trip is covered separately in test_integration.py.
+The real MinIO round-trip is covered by test_integration.py, which is skipped
+unless RUN_STORAGE_INTEGRATION=1 and a live MinIO is configured.
 """
 
 from __future__ import annotations
