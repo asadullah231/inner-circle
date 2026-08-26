@@ -121,27 +121,43 @@ def prepare_render_workspace(
     missing: list[str] = []
     local_by_beat: dict[str, str] = {}
 
-    for beat_id, key in asset_keys.items():
+    def _fetch(key: str, dest: str) -> bool:
+        """Download key to dest unless it is already there. Returns False if the
+        object does not exist, so the caller can record the miss rather than
+        failing one input at a time."""
         try:
-            filename = os.path.basename(key)
-            dest = os.path.join(assets_dir, filename)
             if not os.path.exists(dest):
                 store.download_to(key, dest)
-            local_by_beat[beat_id] = dest
+            return True
         except ObjectNotFoundError:
+            return False
+
+    for beat_id, key in asset_keys.items():
+        dest = os.path.join(assets_dir, os.path.basename(key))
+        if _fetch(key, dest):
+            local_by_beat[beat_id] = dest
+        else:
             missing.append(beat_id)
+
+    # Audio and captions are staged the same way, and a missing narration is
+    # just as fatal as a missing clip — the audio waveform is the timing
+    # authority (plan §8). Check them in the SAME pre-flight so one failure
+    # names everything that is missing, instead of the beats being validated
+    # here and a missing audio blowing up separately once the renderer has
+    # already started staging.
+    if audio_key:
+        dest = os.path.join(root, "audio", os.path.basename(audio_key))
+        if not _fetch(audio_key, dest):
+            missing.append("audio")
+    if caption_key:
+        dest = os.path.join(root, "captions", os.path.basename(caption_key))
+        if not _fetch(caption_key, dest):
+            missing.append("captions")
 
     if missing:
         raise StorageError(
-            "Cannot start render, assets missing for beats: " + ", ".join(sorted(missing))
+            "Cannot start render, missing required inputs: " + ", ".join(sorted(missing))
         )
-
-    if audio_key:
-        dest = os.path.join(root, "audio", os.path.basename(audio_key))
-        store.download_to(audio_key, dest)
-    if caption_key:
-        dest = os.path.join(root, "captions", os.path.basename(caption_key))
-        store.download_to(caption_key, dest)
 
     # Rewrite the spec so every beat points at a local file, not a URL.
     resolved = json.loads(json.dumps(video_spec))

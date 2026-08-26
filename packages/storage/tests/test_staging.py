@@ -246,6 +246,67 @@ def test_preparing_the_workspace_twice_does_not_redownload(store, sample_video):
     assert store.download_calls == after_first, "the asset was downloaded twice"
 
 
+def test_render_fails_before_starting_if_audio_is_missing(store, sample_video):
+    """A missing narration is as fatal as a missing clip, and must be caught in
+    the same pre-flight — the audio waveform is the timing authority."""
+    record = staging.stage_asset(store, "proj_1", "beat_001", sample_video, "a.mp4")
+    render_id = paths.new_render_id()
+
+    with pytest.raises(StorageError) as exc:
+        staging.prepare_render_workspace(
+            store,
+            "proj_1",
+            render_id,
+            {"beats": [{"id": "beat_001"}]},
+            {"beat_001": record["storage_key"]},
+            audio_key=paths.audio_key("proj_1"),  # never staged -> missing
+        )
+    assert "audio" in str(exc.value)
+
+
+def test_missing_audio_and_beat_are_reported_together(store):
+    """One failure names every missing input at once — a missing beat and a
+    missing audio should not require two separate render attempts to discover."""
+    render_id = paths.new_render_id()
+
+    with pytest.raises(StorageError) as exc:
+        staging.prepare_render_workspace(
+            store,
+            "proj_1",
+            render_id,
+            {"beats": [{"id": "beat_001"}]},
+            {"beat_001": "assets/11/a_1111111111111111.mp4"},  # missing beat
+            audio_key=paths.audio_key("proj_1"),  # missing audio
+            caption_key=paths.caption_key("proj_1"),  # missing captions
+        )
+    message = str(exc.value)
+    assert "beat_001" in message
+    assert "audio" in message
+    assert "captions" in message
+
+
+def test_render_workspace_stages_audio_and_captions_when_present(store, sample_video):
+    record = staging.stage_asset(store, "proj_1", "beat_001", sample_video, "a.mp4")
+    a_key = paths.audio_key("proj_1")
+    c_key = paths.caption_key("proj_1")
+    store.objects[a_key] = b"narration wav bytes"
+    store.objects[c_key] = b"1\n00:00:00,000 --> 00:00:01,000\nhi\n"
+    render_id = paths.new_render_id()
+
+    result = staging.prepare_render_workspace(
+        store,
+        "proj_1",
+        render_id,
+        {"beats": [{"id": "beat_001"}]},
+        {"beat_001": record["storage_key"]},
+        audio_key=a_key,
+        caption_key=c_key,
+    )
+
+    assert os.path.isfile(os.path.join(result["workspace"], "audio", "narration.wav"))
+    assert os.path.isfile(os.path.join(result["workspace"], "captions", "narration.srt"))
+
+
 # --- packaging a finished render -------------------------------------------
 
 
