@@ -117,11 +117,61 @@ They use throwaway buckets (`avg-it-<random>-*`) and clean up after themselves,
 so they never touch your real dev buckets. CI runs them in the
 `storage-integration` job against a MinIO container.
 
+## Database
+
+[`db.py`](db.py) is a thin adapter over the `assets` table. It persists the
+metadata the storage layer already returns and is the source of truth for dedup
+and for the retention cleanup job's in-use set.
+
+> **Dedup is DB-authoritative.** After this adapter is wired in, the truth about
+> whether a file is a duplicate is **`is_new` returned by `insert_or_get_asset`**,
+> not the `deduplicated` flag from `stage_asset`. That flag comes from a MinIO
+> `exists()` check, which is only an upload-skip optimisation and can lag the DB
+> (e.g. an object reached MinIO but its row was never written). **Wire dedup
+> logic to `is_new`, not to `deduplicated`.**
+
+Interface (all functions take a caller-supplied psycopg 3 `Connection` and never
+commit — the caller owns the transaction):
+
+| Function | Purpose |
+|---|---|
+| `insert_or_get_asset(conn, staged, provider_fields) -> (id, is_new)` | Upsert on `file_hash`; returns the existing id on a dedup hit (`is_new=False`). |
+| `get_asset_by_hash(conn, file_hash)` | Full row for a hash, or `None`. |
+| `get_asset_by_id(conn, asset_id)` | Full row for an id, or `None`. |
+| `list_in_use_asset_keys(conn)` | Every `storage_key` referenced by a beat — the real in-use set for `retention.run_cleanup`. |
+| `touch_asset_last_used(conn, asset_id)` | Stub until a `last_used_at` column exists (`TODO(mubashir)`). |
+
+Design rules: parameterised queries only; the module does **not** import psycopg
+at runtime, so the unit tests run with no driver installed. `psycopg` lives in a
+separate [`requirements-db.txt`](requirements-db.txt) that only the DB
+integration job installs — so "unit tests need no DB driver" is enforced by CI.
+
+Unit tests ([`test_db_unit.py`](tests/test_db_unit.py)) use a fake connection —
+no Postgres. The integration tests ([`test_db_integration.py`](tests/test_db_integration.py))
+run against a real Postgres, opt-in like the MinIO ones:
+
+```bash
+# PowerShell — point at any Postgres; schema is bootstrapped from the fixture
+$env:RUN_STORAGE_DB_INTEGRATION="1"
+$env:DATABASE_URL="postgresql://user:pass@localhost:5432/avg_test"
+pip install -r packages/storage/requirements-db.txt
+pytest -m db_integration packages/storage/tests/test_db_integration.py -v
+```
+
+CI runs them in the `storage-db-integration` job against a `postgres:16` service
+container.
+
 ## Known gaps
 
-- **Database adapter not yet wired.** Dedup currently asks MinIO whether the
-  object exists; the target is a `file_hash` lookup in the `assets` table, which
-  is also what will let the cleanup job source a real in-use set and stop
-  defaulting to dry-run. Blocked on the DB schema / repo merge.
+- **Database adapter exists (`db.py`) but is not yet wired into the service.**
+  `stage_asset` still uses a MinIO `exists()` check for its `deduplicated` flag;
+  the retrieval worker will call `insert_or_get_asset` and treat `is_new` as the
+  dedup truth. Wiring waits on repo consolidation (the schema lives in Mubashir's
+  separate repo).
+- **`touch_asset_last_used` is a stub** until a `last_used_at` column lands, so
+  the retention cleanup job's `dry_run` stays the default even with a real
+  in-use set. See the contract runbook.
+- **No `renders` table** to persist a packaged render (needed for M6
+  reproduce-from-manifest). Not owned here.
 - **No HTTP endpoint for the signed PUT upload URL** yet (`signed_put_url`
   exists in the client).

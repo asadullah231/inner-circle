@@ -162,6 +162,18 @@ automatically by a worker.
 Dedup is global across projects, because the underlying bytes are identical and
 rights metadata is attached to the asset record, not to the object copy.
 
+**DB is authoritative (as of the `packages/storage/db.py` adapter).** The
+`assets` table holds a `UNIQUE (file_hash)` constraint, and
+`insert_or_get_asset()` upserts against it — returning the existing `id` and
+`is_new=False` on a hit. That `is_new` is the source of truth for dedup; the
+`deduplicated` flag `stage_asset()` returns (from a MinIO `exists()` check) is
+only an upload-skip optimisation and can lag the DB, so new code should key off
+`is_new`. `storage_key` and `size_bytes` are persisted columns on that table,
+not just transient response fields. Retention's in-use set now comes from
+`list_in_use_asset_keys()` (a query over `beats.asset_id`); the cleanup job's
+`dry_run` still defaults to true until a `last_used_at` column exists and the job
+is reworked to delete DB rows alongside objects.
+
 ---
 
 ## 8. Service interface
