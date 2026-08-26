@@ -20,6 +20,7 @@ class MediaType(str, Enum):
     VIDEO = "video"
     IMAGE = "image"
     AUDIO = "audio"
+    UNKNOWN = "unknown"
 
 
 class AllowedUse(str, Enum):
@@ -36,25 +37,26 @@ class AssetRecord:
     provider_asset_id: str
     source_url: str
     local_uri: Optional[str]
-
     media_type: MediaType
     width: Optional[int]
     height: Optional[int]
     duration_s: Optional[float]
-
     license: str
     attribution: Optional[str]
     allowed_use: AllowedUse
-
     downloaded_at: Optional[str]
     file_hash: Optional[str]
     embedding_uri: Optional[str] = None
     quality_score: Optional[float] = None
-
     search_query: Optional[str] = None
     retrieved_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+
+    # --- populated by the storage layer (packages/storage) ---
+    storage_key: Optional[str] = None
+    size_bytes: Optional[int] = None
+    deduplicated: bool = False
 
     def to_dict(self) -> dict:
         d = asdict(self)
