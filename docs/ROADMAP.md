@@ -38,10 +38,21 @@ Adapted from the dossier's 6-phase, 19-person, 9-week plan (`docs/reference/`) i
 | M1.0 | Storage layer: S3/MinIO adapter, staging, dedup, signed URLs, retention, render packaging | ✅ done (PR #2) |
 | M1.0b | Assets DB adapter: dedup source of truth, retention in-use set | ✅ done (PR #3) |
 | M1.1 | Core schema + migration runner: `projects, jobs, beats, approvals, audit_events` | ✅ done |
-| **M1.2** | **Job state machine: legal transitions only, idempotent, every transition audit-logged** | **this PR** |
-| M1.3 | FastAPI service: project CRUD, job create/status, single-token auth | next |
-| M1.4 | Redis queue + worker skeleton: picks up a job, advances state, does no real work yet | after M1.3 |
-| M1.5 | Restart-recovery integration test + M1 demo walkthrough | closes M1 |
+| M1.2 | Job state machine: legal transitions only, idempotent, every transition audit-logged | ✅ done |
+| M1.3 | FastAPI service: project CRUD, job create/status, gate decisions, single-token auth | ✅ done |
+| M1.4 | Job queue (Redis list) + worker: reserves a job, advances one step, parks at gates | ✅ done |
+| **M1.5** | **Restart-recovery acceptance tests + M1 demo walkthrough** | **this PR — closes M1** |
+
+**Where the code lives:** `packages/db/` (schema, state machine),
+`packages/api/` (FastAPI control plane), `packages/worker/` (queue + loop),
+`packages/storage/` (the storage lane). `docs/runbooks/api-and-worker.md` is
+the operating guide; `demo_m1_full.py` runs the whole thing with no Postgres.
+
+**Queue decision (locked at M1.4):** a Redis list with `BLMOVE`, not Celery/RQ/arq.
+The job's state already lives in Postgres and the state machine already makes
+redelivery safe, so a broker's retry policy and result backend would be a second
+source of truth for something we have. `BLMOVE` into a processing list is what
+makes a crashed worker recoverable; `Worker.recover()` is the sweep.
 
 **Stack decision (locked at M1.1):** FastAPI over NestJS — resolves Q&B-2. The storage, media and render lanes are already Python; a second language at the API boundary buys nothing and splits the contracts.
 
@@ -49,7 +60,7 @@ Adapted from the dossier's 6-phase, 19-person, 9-week plan (`docs/reference/`) i
 
 **Dependencies:** M0.
 
-**Acceptance criteria (whole milestone):** `POST /projects` → `POST /jobs` → job visible in `Draft`, worker picks it up, transitions to a terminal state, restart the API/worker mid-job and the state is unchanged.
+**Acceptance criteria (whole milestone):** `POST /projects` → `POST /jobs` → job visible in `Draft`, worker picks it up, transitions to a terminal state, restart the API/worker mid-job and the state is unchanged. ✅ met — `packages/worker/tests/test_recovery_integration.py`, run in CI's `core-db-integration` job.
 
 **Testing requirements:** unit tests for state transitions (illegal transitions rejected), integration test for create-project → create-job → worker-processes → restart-recovers.
 

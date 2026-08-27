@@ -32,6 +32,7 @@ jobs:
           pip install pytest
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
           if [ -f packages/storage/requirements.txt ]; then pip install -r packages/storage/requirements.txt; fi
+          if [ -f packages/api/requirements.txt ]; then pip install -r packages/api/requirements.txt; fi
       - name: Run tests
         run: pytest -v
 
@@ -91,8 +92,14 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pytest psycopg[binary]
+          pip install -r packages/api/requirements.txt
       - name: Run core schema and state machine integration tests
         env:
           RUN_DB_INTEGRATION: "1"
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/innercircle_test
         run: python -m pytest packages/db/tests -v -m db_integration
+      - name: Run M1 acceptance tests (API, worker, restart recovery)
+        env:
+          RUN_DB_INTEGRATION: "1"
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/innercircle_test
+        run: python -m pytest packages/worker/tests -v -m db_integration
