@@ -41,7 +41,7 @@ import uuid
 
 import pytest
 
-from packages.storage import paths, retention
+from packages.storage import paths, retention, staging
 from packages.storage.client import MediaStore
 from packages.storage.config import load_settings
 from packages.storage.errors import (
@@ -50,6 +50,7 @@ from packages.storage.errors import (
     ObjectNotFoundError,
     StorageError,
 )
+from packages.storage.probe import MediaInfo
 
 # The whole module is opt-in: it needs a live MinIO. Without the flag every
 # test here is skipped, so the ordinary (FakeStore) suite stays runnable with
@@ -273,3 +274,163 @@ def test_cleanup_deletes_unused_assets_but_never_renders(store, local_file):
     assert store.exists(asset_key) is False
     assert store.exists(kept_asset_key) is True
     assert store.exists(render_key) is True  # renders are never touched
+
+
+# --- two-phase render publish -----------------------------------------------
+
+FAKE_INFO = MediaInfo(
+    media_type="video",
+    duration_s=4.25,
+    width=1920,
+    height=1080,
+    codec="h264",
+    has_audio=True,
+    container="mov,mp4,m4a",
+)
+
+
+def test_two_phase_publish_leaves_final_keys_and_no_staging(
+    store, local_file, monkeypatch
+):
+    """End-to-end two-phase publish against real MinIO: all four final keys
+    land, no .staging/ residue remains, and the return contract is unchanged."""
+    monkeypatch.setattr(staging, "probe", lambda path, ffprobe_path=None: FAKE_INFO)
+
+    render_id = "r_20260827T200000Z"
+    mp4 = local_file("final.mp4", b"real minio render bytes " * 50)
+    thumb = local_file("thumb.jpg", b"\xff\xd8\xff stub jpeg bytes")
+    srt = local_file("narration.srt", b"1\n00:00:00,000 --> 00:00:02,000\nHi\n")
+
+    result = staging.package_render(
+        store,
+        "it_proj",
+        render_id,
+        mp4,
+        thumbnail_path=thumb,
+        caption_path=srt,
+        manifest={"render_id": render_id, "quality": "high"},
+    )
+
+    objects = result["objects"]
+    assert set(objects) == {"mp4", "thumbnail", "captions", "manifest"}
+    for label, key in objects.items():
+        assert store.exists(key), f"final key missing for {label}: {key}"
+        assert ".staging" not in key, f"staging leak in {label}: {key}"
+
+    # Verify no .staging/ residue exists — list the render prefix and check.
+    staging_prefix = paths.render_staging_prefix("it_proj", render_id) + "/"
+    staging_objects = list(
+        store.client.list_objects(
+            store.settings.s3_bucket, prefix=staging_prefix, recursive=True,
+        )
+    )
+    assert staging_objects == [], (
+        f"staging residue: {[o.object_name for o in staging_objects]}"
+    )
+
+
+def test_mid_publish_crash_and_resume_on_real_minio(
+    store, local_file, monkeypatch
+):
+    """Simulate a crash after the MP4 copy but before the manifest copy on real
+    MinIO, then prove resume_publish completes the publish.
+
+    This is important because copy_object on real MinIO handles metadata,
+    encryption headers, and ETags in ways FakeStore does not replicate.
+    """
+    monkeypatch.setattr(staging, "probe", lambda path, ffprobe_path=None: FAKE_INFO)
+
+    render_id = "r_20260827T210000Z"
+    mp4 = local_file("final.mp4", b"crash test render bytes " * 50)
+    srt = local_file("narration.srt", b"1\n00:00:00,000 --> 00:00:01,000\nCrash\n")
+
+    # Inject a crash after the MP4 is copied to final but before the manifest.
+    copy_count = {"n": 0}
+    original_copy = store.copy_object
+
+    def crashing_copy(source_key, dest_key, bucket=None):
+        copy_count["n"] += 1
+        # Let the MP4 copy through (first call), crash on the second (captions
+        # or manifest — whichever comes next).
+        if copy_count["n"] >= 2:
+            raise ConnectionError("simulated mid-publish network failure")
+        return original_copy(source_key, dest_key, bucket)
+
+    monkeypatch.setattr(store, "copy_object", crashing_copy)
+
+    with pytest.raises(ConnectionError, match="simulated"):
+        staging.package_render(
+            store,
+            "it_proj",
+            render_id,
+            mp4,
+            caption_path=srt,
+            manifest={"render_id": render_id},
+        )
+
+    # Restore copy_object so resume_publish can use the real one.
+    monkeypatch.setattr(store, "copy_object", original_copy)
+
+    # The final MP4 should exist (copied before crash), manifest should not.
+    final_mp4 = paths.render_key("it_proj", render_id, "final.mp4")
+    final_manifest = paths.manifest_key("it_proj", render_id)
+    assert store.exists(final_mp4), "MP4 should have been copied before crash"
+    assert not store.exists(final_manifest), "manifest should NOT be at final path"
+
+    # Staging copies should still exist (the crash left them behind).
+    staging_prefix = paths.render_staging_prefix("it_proj", render_id) + "/"
+    staging_objects = list(
+        store.client.list_objects(
+            store.settings.s3_bucket, prefix=staging_prefix, recursive=True,
+        )
+    )
+    assert len(staging_objects) > 0, "staging files should survive the crash"
+
+    # resume_publish completes it.
+    result = staging.resume_publish(store, "it_proj", render_id)
+    assert "manifest" in result["objects"]
+    assert store.exists(result["objects"]["manifest"])
+
+    # No staging residue after resume.
+    staging_after = list(
+        store.client.list_objects(
+            store.settings.s3_bucket, prefix=staging_prefix, recursive=True,
+        )
+    )
+    assert staging_after == [], (
+        f"staging residue after resume: {[o.object_name for o in staging_after]}"
+    )
+
+
+def test_concurrent_second_caller_rejected_on_real_minio(
+    store, local_file, monkeypatch
+):
+    """Two calls with the same render_id on real MinIO: the first succeeds, the
+    second is rejected with ImmutableRenderError, and no staging residue from
+    the failed attempt remains.
+
+    This exercises the real S3 exists() check that guards immutability — the
+    code path where FakeStore diverges most from real MinIO (stat_object's
+    error codes, eventual consistency edge cases).
+    """
+    monkeypatch.setattr(staging, "probe", lambda path, ffprobe_path=None: FAKE_INFO)
+
+    render_id = "r_20260827T220000Z"
+    mp4 = local_file("final.mp4", b"concurrent test bytes " * 50)
+
+    staging.package_render(store, "it_proj", render_id, mp4)
+
+    with pytest.raises(ImmutableRenderError):
+        staging.package_render(store, "it_proj", render_id, mp4)
+
+    # No staging files from the rejected second attempt.
+    staging_prefix = paths.render_staging_prefix("it_proj", render_id) + "/"
+    staging_objects = list(
+        store.client.list_objects(
+            store.settings.s3_bucket, prefix=staging_prefix, recursive=True,
+        )
+    )
+    assert staging_objects == [], (
+        f"staging residue from rejected call: "
+        f"{[o.object_name for o in staging_objects]}"
+    )

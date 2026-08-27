@@ -79,6 +79,36 @@ Renders are **immutable**. A re-render creates a new `render_id`. We never
 overwrite a previous render, because §12 Phase 4 requires reproducing a prior
 render from its manifest.
 
+### Render staging prefix (internal — callers never see this)
+
+During `package_render()`, every file is uploaded to a `.staging/` prefix
+before being published to its final path:
+
+```
+projects/{project_id}/renders/{render_id}/.staging/final.mp4
+projects/{project_id}/renders/{render_id}/.staging/thumb.jpg
+projects/{project_id}/renders/{render_id}/.staging/narration.srt
+projects/{project_id}/renders/{render_id}/.staging/manifest.json
+```
+
+Once all files are staged, they are server-side-copied to their final paths
+(§2 project categories above), with the manifest copied **last** as the commit
+marker. A render is considered published if and only if its manifest exists at
+the final path.
+
+**This is an internal implementation detail.** External callers never see
+`.staging/` keys — not in signed URLs, not in the metadata endpoint, not in
+the `package_render` return value. If `.staging/` keys are visible in the
+bucket, it means a publish crashed mid-way. They can be inspected, and the
+publish completed, via `resume_publish()` (a library-only recovery tool, not
+an HTTP endpoint).
+
+Orphaned staging files are crash residue. The retention job recognises them
+as category `render_staging` and cleans them up after 24 hours (configurable
+via `RETENTION_RENDER_STAGING_HOURS`). They are the only new positively-
+cleanable shape added by this change — every other unrecognised key shape
+is still treated as protected (fail-closed rule unchanged).
+
 ---
 
 ## 3. Path safety rules (§15)
@@ -144,8 +174,13 @@ Rules:
 | `avg-tmp` scratch | 24 hours |
 | `avg-uploads` raw uploads | 7 days after validation |
 | Sourced/staged assets | 30 days after last project use |
+| Render `.staging/` files | 24 hours (`RETENTION_RENDER_STAGING_HOURS`) |
 | Final renders + manifests + captions | Permanent until project deletion |
 | Deleted project | Soft-delete 30 days, then hard delete |
+
+Render staging files are crash residue from an interrupted `package_render()`
+(see §2 "Render staging prefix"). They are the only new cleanable category —
+every other unrecognised key shape is still treated as protected.
 
 Hard deletion is a separate, explicitly-triggered job. Nothing is hard-deleted
 automatically by a worker.
@@ -253,6 +288,7 @@ This is what makes beat-level retry safe (§12 Phase 3).
 | `SIGNED_URL_TTL_WORKER_S` | Worker GET TTL (seconds) | `1800` |
 | `SIGNED_URL_TTL_UPLOAD_S` | Upload PUT TTL (seconds) | `900` |
 | `RETENTION_TMP_DAYS` / `RETENTION_UPLOADS_DAYS` / `RETENTION_ASSET_DAYS` | Retention windows (days) | `1` / `7` / `30` |
+| `RETENTION_RENDER_STAGING_HOURS` | Staging crash-residue cleanup window (hours) | `24` |
 | `RETENTION_MAX_DELETIONS` | Hard cap on deletions per cleanup run | `500` |
 | `FFPROBE_PATH` | Path to ffprobe binary | `ffprobe` |
 | `WORKSPACE_ROOT` | Local staging root for render workers | `/workspace` |

@@ -46,6 +46,18 @@ class ImmutableRenderError(StorageError):
     code = "immutable_render"
 
 
+class UnrecoverableRenderError(StorageError):
+    """A partially-published render cannot be completed.
+
+    The staging files are too old and the manifest never made it to its final
+    path or to staging.  The render must be re-run from scratch with a new
+    render_id.
+    """
+
+    status_code = 410
+    code = "unrecoverable_render"
+
+
 class ProbeError(StorageError):
     """ffprobe failed or returned unusable output."""
 

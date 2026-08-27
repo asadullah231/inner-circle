@@ -12,11 +12,16 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import timedelta
 
 import pytest
 
 from packages.storage import paths, staging
-from packages.storage.errors import ImmutableRenderError, StorageError
+from packages.storage.errors import (
+    ImmutableRenderError,
+    StorageError,
+    UnrecoverableRenderError,
+)
 from packages.storage.probe import MediaInfo
 
 FAKE_INFO = MediaInfo(
@@ -374,3 +379,185 @@ def test_package_render_rejects_an_unsafe_render_id(store, finished_render):
     mp4, _, _ = finished_render
     with pytest.raises(StorageError):
         staging.package_render(store, "proj_1", "../../etc", mp4)
+
+
+# --- two-phase publish (the orphan-edge fix) --------------------------------
+
+
+def test_package_render_produces_same_objects_dict_via_staging(store, finished_render):
+    """The return contract is unchanged: same keys, same final paths, and NO
+    staging files left behind."""
+    mp4, thumb, srt = finished_render
+    render_id = paths.new_render_id()
+
+    result = staging.package_render(
+        store, "proj_1", render_id, mp4,
+        thumbnail_path=thumb, caption_path=srt,
+        manifest={"render_id": render_id},
+    )
+
+    objects = result["objects"]
+    assert set(objects) == {"mp4", "thumbnail", "captions", "manifest"}
+    for key in objects.values():
+        assert store.exists(key), f"final key not present: {key}"
+        # Final keys must NOT contain .staging
+        assert ".staging" not in key
+
+    # No staging files should remain
+    staging_keys = [k for k in store.objects if ".staging" in k]
+    assert staging_keys == [], f"staging files left behind: {staging_keys}"
+
+
+def test_concurrent_render_second_caller_gets_immutable_error(store, finished_render):
+    """Two calls with the same render_id: the first succeeds, the second
+    raises ImmutableRenderError, and no partial state is left."""
+    mp4, _, _ = finished_render
+    render_id = paths.new_render_id()
+
+    staging.package_render(store, "proj_1", render_id, mp4)
+    with pytest.raises(ImmutableRenderError):
+        staging.package_render(store, "proj_1", render_id, mp4)
+
+    # No staging files should remain from the failed second attempt
+    staging_keys = [k for k in store.objects if ".staging" in k]
+    assert staging_keys == [], f"staging files from failed attempt: {staging_keys}"
+
+
+def test_concurrent_race_belt_and_braces_check(store, finished_render):
+    """If another caller publishes between our staging phase and our publish
+    phase, _publish_render's re-check catches it and cleans up staging."""
+    mp4, _, _ = finished_render
+    render_id = "r_20260827T100000Z"
+    final_mp4_key = paths.render_key("proj_1", render_id, "final.mp4")
+
+    # Simulate: we have staged files, but another caller published in between.
+    staging_mp4 = paths.render_staging_key("proj_1", render_id, "final.mp4")
+    store.objects[staging_mp4] = b"our staged mp4"
+    store.objects[final_mp4_key] = b"the other caller's published mp4"
+
+    staged = {"mp4": staging_mp4}
+    with pytest.raises(ImmutableRenderError):
+        staging._publish_render(store, "proj_1", render_id, staged)
+
+    # Our staging files must be cleaned up
+    assert staging_mp4 not in store.objects
+    # The other caller's published MP4 must survive
+    assert store.exists(final_mp4_key)
+
+
+def test_belt_and_braces_check_precedes_first_copy(store, finished_render):
+    """The re-check in _publish_render must happen BEFORE any copy_object call.
+    Patch copy_object to record calls and verify the exists() check ran first."""
+    mp4, _, _ = finished_render
+    render_id = "r_20260827T110000Z"
+    final_mp4_key = paths.render_key("proj_1", render_id, "final.mp4")
+
+    staging_mp4 = paths.render_staging_key("proj_1", render_id, "final.mp4")
+    store.objects[staging_mp4] = b"staged bytes"
+    store.objects[final_mp4_key] = b"already published"
+
+    copy_calls = []
+    original_copy = store.copy_object
+
+    def recording_copy(src, dst, bucket=None):
+        copy_calls.append((src, dst))
+        return original_copy(src, dst, bucket)
+
+    store.copy_object = recording_copy
+
+    with pytest.raises(ImmutableRenderError):
+        staging._publish_render(store, "proj_1", render_id, {"mp4": staging_mp4})
+
+    # copy_object should never have been called — the exists() check caught it
+    assert copy_calls == [], "copy_object was called before the immutability check"
+
+
+def test_mid_publish_crash_leaves_staging_for_recovery(store, finished_render):
+    """Simulate a crash after the MP4 copy but before the manifest copy.
+    Assert:
+      (a) final MP4 exists
+      (b) final manifest does NOT exist
+      (c) staging copies still exist
+      (d) resume_publish completes it
+    """
+    mp4, thumb, srt = finished_render
+    render_id = "r_20260827T120000Z"
+
+    # Stage everything manually
+    staging_mp4 = paths.render_staging_key("proj_1", render_id, "final.mp4")
+    staging_thumb = paths.render_staging_key("proj_1", render_id, "thumb.jpg")
+    staging_manifest = paths.render_staging_key("proj_1", render_id, "manifest.json")
+
+    store.objects[staging_mp4] = b"rendered video bytes"
+    store.objects[staging_thumb] = b"thumbnail bytes"
+    store.objects[staging_manifest] = b'{"render_id": "r_20260827T120000Z"}'
+
+    # Simulate partial publish: MP4 copied to final, then crash.
+    final_mp4 = paths.render_key("proj_1", render_id, "final.mp4")
+    store.objects[final_mp4] = store.objects[staging_mp4]
+    # Staging MP4 was deleted after copy (normal behaviour), but thumb and
+    # manifest staging copies remain.
+    del store.objects[staging_mp4]
+
+    final_manifest = paths.manifest_key("proj_1", render_id)
+
+    # (a) Final MP4 exists
+    assert store.exists(final_mp4)
+    # (b) Final manifest does NOT exist
+    assert not store.exists(final_manifest)
+    # (c) Staging copies still exist
+    assert store.exists(staging_thumb)
+    assert store.exists(staging_manifest)
+
+    # (d) resume_publish completes it
+    result = staging.resume_publish(store, "proj_1", render_id)
+    assert "manifest" in result["objects"]
+    assert store.exists(result["objects"]["manifest"])
+    # Staging files should be cleaned up after resume
+    staging_keys = [k for k in store.objects if ".staging" in k]
+    assert staging_keys == []
+
+
+def test_resume_publish_rollback_when_no_manifest_and_old(store):
+    """If staging files exist but the manifest was never uploaded and the files
+    are older than the threshold, resume_publish cleans up and raises
+    UnrecoverableRenderError."""
+    render_id = "r_20260827T130000Z"
+    staging_mp4 = paths.render_staging_key("proj_1", render_id, "final.mp4")
+    store.objects[staging_mp4] = b"orphaned mp4"
+
+    # Fake stat to return an old last_modified
+    from datetime import timezone as _tz
+    from datetime import datetime as _dt
+
+    old_time = (_dt.now(_tz.utc) - timedelta(hours=25)).isoformat()
+    original_stat = store.stat
+
+    def fake_stat(key, bucket=None):
+        result = original_stat(key, bucket)
+        if ".staging" in key:
+            result["last_modified"] = old_time
+        return result
+
+    store.stat = fake_stat
+
+    with pytest.raises(UnrecoverableRenderError):
+        staging.resume_publish(store, "proj_1", render_id, max_staging_age_hours=24.0)
+
+    # Staging files should be cleaned up
+    assert not store.exists(staging_mp4)
+
+
+def test_resume_publish_noop_when_already_published(store, finished_render):
+    """If the manifest is already at the final path, resume_publish returns
+    the existing objects without changing anything."""
+    mp4, _, _ = finished_render
+    render_id = paths.new_render_id()
+
+    original = staging.package_render(
+        store, "proj_1", render_id, mp4,
+        manifest={"render_id": render_id},
+    )
+
+    result = staging.resume_publish(store, "proj_1", render_id)
+    assert result["objects"]["manifest"] == original["objects"]["manifest"]

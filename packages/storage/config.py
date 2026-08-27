@@ -54,10 +54,11 @@ class Settings:
     ttl_worker_s: int
     ttl_upload_s: int
 
-    # --- retention windows (days) ---
+    # --- retention windows (days / hours) ---
     retention_tmp_days: int
     retention_uploads_days: int
     retention_asset_days: int
+    retention_render_staging_hours: int
     retention_max_deletions: int
 
     # --- local paths ---
@@ -91,6 +92,7 @@ def load_settings() -> Settings:
         retention_tmp_days=_env_int("RETENTION_TMP_DAYS", 1),
         retention_uploads_days=_env_int("RETENTION_UPLOADS_DAYS", 7),
         retention_asset_days=_env_int("RETENTION_ASSET_DAYS", 30),
+        retention_render_staging_hours=_env_int("RETENTION_RENDER_STAGING_HOURS", 24),
         retention_max_deletions=_env_int("RETENTION_MAX_DELETIONS", 500),
         ffprobe_path=_env("FFPROBE_PATH", "ffprobe"),
         workspace_root=_env("WORKSPACE_ROOT", "/workspace"),
