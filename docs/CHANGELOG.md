@@ -9,6 +9,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `packages/db` — core schema migration (`projects, jobs, beats, approvals, audit_events`)
   and a forward-only migration runner (M1.1)
 - CI job `core-db-integration` running the core schema suite against postgres:16
+- `packages/db/states.py` — pure job state machine: 12 states, 3 approval gates,
+  legal-transition map, terminal states, idempotent self-transitions (M1.2)
+- `packages/db/transitions.py` — durable transitions: row-locked reads, audit trail
+  on every move, gate decisions with reject-requires-note (M1.2)
 
 ### Changed
 - `docs/ROADMAP.md` — M1 split into sub-milestones M1.0 through M1.5; FastAPI locked

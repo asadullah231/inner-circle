@@ -37,9 +37,9 @@ Adapted from the dossier's 6-phase, 19-person, 9-week plan (`docs/reference/`) i
 |---|---|---|
 | M1.0 | Storage layer: S3/MinIO adapter, staging, dedup, signed URLs, retention, render packaging | ✅ done (PR #2) |
 | M1.0b | Assets DB adapter: dedup source of truth, retention in-use set | ✅ done (PR #3) |
-| **M1.1** | **Core schema + migration runner: `projects, jobs, beats, approvals, audit_events`** | **this PR** |
-| M1.2 | Job state machine: legal transitions only, idempotent, every transition audit-logged | next |
-| M1.3 | FastAPI service: project CRUD, job create/status, single-token auth | after M1.2 |
+| M1.1 | Core schema + migration runner: `projects, jobs, beats, approvals, audit_events` | ✅ done |
+| **M1.2** | **Job state machine: legal transitions only, idempotent, every transition audit-logged** | **this PR** |
+| M1.3 | FastAPI service: project CRUD, job create/status, single-token auth | next |
 | M1.4 | Redis queue + worker skeleton: picks up a job, advances state, does no real work yet | after M1.3 |
 | M1.5 | Restart-recovery integration test + M1 demo walkthrough | closes M1 |
 

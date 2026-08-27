@@ -91,7 +91,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pytest psycopg[binary]
-      - name: Run core schema integration tests
+      - name: Run core schema and state machine integration tests
         env:
           RUN_DB_INTEGRATION: "1"
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/innercircle_test
