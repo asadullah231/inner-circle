@@ -31,21 +31,29 @@ Adapted from the dossier's 6-phase, 19-person, 9-week plan (`docs/reference/`) i
 
 **Objective:** A project and a job can be created via API and survive a restart. No AI calls yet — this milestone proves the state machine, not the intelligence.
 
-**Features:**
-- PostgreSQL schema: `projects, jobs, beats, approvals, providers, costs, audit_events`
-- API: project CRUD, job creation, job status
-- Job state machine (`Draft → Planning → ... → Complete`) with idempotent, audit-logged transitions
-- Redis + queue worker skeleton (accepts a job, marks it processed — no real work yet)
-- Local-disk storage adapter (S3/MinIO interface defined, disk implementation for now)
-- Basic auth (single-user token is fine for M1; full RBAC lands in M5 with the UI)
+**Split into sub-milestones.** M1 covers six independent pieces; each ships as its own PR with its own demo rather than one long-lived branch.
+
+| Sub | Scope | Status |
+|---|---|---|
+| M1.0 | Storage layer: S3/MinIO adapter, staging, dedup, signed URLs, retention, render packaging | ✅ done (PR #2) |
+| M1.0b | Assets DB adapter: dedup source of truth, retention in-use set | ✅ done (PR #3) |
+| **M1.1** | **Core schema + migration runner: `projects, jobs, beats, approvals, audit_events`** | **this PR** |
+| M1.2 | Job state machine: legal transitions only, idempotent, every transition audit-logged | next |
+| M1.3 | FastAPI service: project CRUD, job create/status, single-token auth | after M1.2 |
+| M1.4 | Redis queue + worker skeleton: picks up a job, advances state, does no real work yet | after M1.3 |
+| M1.5 | Restart-recovery integration test + M1 demo walkthrough | closes M1 |
+
+**Stack decision (locked at M1.1):** FastAPI over NestJS — resolves Q&B-2. The storage, media and render lanes are already Python; a second language at the API boundary buys nothing and splits the contracts.
+
+**Schema ownership (important):** `assets` is owned by the storage/media lane and lives in its own migration. `packages/db/migrations/001_core_schema.sql` deliberately does **not** create it. `beats` is created by the core schema (the workflow engine owns beat state); the storage lane only ALTERs it to attach the asset foreign key, so the assets migration must run after 001.
 
 **Dependencies:** M0.
 
-**Acceptance criteria:** `POST /projects` → `POST /jobs` → job visible in `Draft`, worker picks it up, transitions to a terminal state, restart the API/worker mid-job and the state is unchanged.
+**Acceptance criteria (whole milestone):** `POST /projects` → `POST /jobs` → job visible in `Draft`, worker picks it up, transitions to a terminal state, restart the API/worker mid-job and the state is unchanged.
 
 **Testing requirements:** unit tests for state transitions (illegal transitions rejected), integration test for create-project → create-job → worker-processes → restart-recovers.
 
-**Definition of Done:** PR merged to `develop`, CI green, demo: curl/Postman walkthrough recorded in the PR description.
+**Definition of Done:** every sub-milestone PR merged to `develop`, CI green, demo: curl/Postman walkthrough recorded in the M1.5 PR description.
 
 ---
 

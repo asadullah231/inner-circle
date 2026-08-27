@@ -2,7 +2,8 @@
 
 Internal, self-hosted video production orchestrator: brief/script in → planned storyboard → licensed visuals + narration → deterministic render → automated QA → human-approved MP4 out. Provider-neutral by design — every LLM, TTS, stock, and render provider sits behind a swappable adapter, configured from an admin screen, never hard-coded.
 
-**Status:** Foundation (M0). No application code yet — see `docs/ROADMAP.md`.
+**Status:** M1 — Durable Backend Skeleton, in progress. Storage layer and core
+schema have landed; API, state machine and worker are next. See `docs/ROADMAP.md`.
 
 ## Start here
 
@@ -11,6 +12,14 @@ Internal, self-hosted video production orchestrator: brief/script in → planned
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — milestone-by-milestone plan
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — branching/PR/release workflow
 - [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — what shipped, when
+
+## Packages
+
+| Package | What it does | Milestone |
+|---|---|---|
+| `packages/contracts` | `VideoSpec` / `AssetRecord` — the frozen shapes every lane agrees on | M0 |
+| `packages/storage` | S3/MinIO adapter: staging, dedup, signed URLs, retention, render packaging | M1 |
+| `packages/db` | Core schema (`projects, jobs, beats, approvals, audit_events`) + migration runner | M1 |
 
 ## Core rule
 
