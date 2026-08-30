@@ -92,6 +92,23 @@ Interactive docs at `http://localhost:8080/docs`.
 - **Cleanup fails closed:** unrecognised key shapes are treated as protected;
   renders/thumbs/manifests/captions are never deleted; `dry_run` defaults to
   `True` and there is a hard per-run deletion cap.
+- **Render publication is atomic** from the caller's perspective.
+  `package_render()` uploads every file to a `.staging/` prefix first, then
+  copies them to their final paths in one publish step.  The manifest is
+  copied last and acts as the commit marker — a render is considered published
+  if and only if its manifest exists at the final path.  A crash mid-publish
+  leaves staging files in place for diagnosis and recovery via
+  `resume_publish()`.  Orphaned staging files older than 24 hours are treated
+  as crash residue and cleaned up by the retention job.
+  **Concurrency note:** S3/MinIO has no conditional-write primitive for
+  `copy_object`, so the belt-and-braces check in `_publish_render` cannot
+  fully close the TOCTOU window.  **The orchestration layer is responsible
+  for not dispatching the same `render_id` to two workers.**  If it does, the
+  early guard and the re-check will catch the race in all but a vanishingly
+  narrow window, and the manifest-last ordering means a partial second
+  publish is detectable.  True mutual exclusion requires an external lock
+  (DB advisory lock, distributed lock service) — that belongs in the
+  orchestration layer, not here.
 
 ## Tests
 

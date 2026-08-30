@@ -11,6 +11,7 @@ import os
 from datetime import timedelta
 
 from minio import Minio
+from minio.commonconfig import CopySource
 from minio.error import S3Error
 
 from . import paths
@@ -143,6 +144,43 @@ class MediaStore:
                 f"Render object already exists and cannot be overwritten: {key}"
             )
         return self.put_file(key, local_path, kind=kind)
+
+    def copy_object(self, source_key: str, dest_key: str, bucket: str | None = None) -> None:
+        """Server-side copy within the primary bucket.
+
+        Both keys pass through assert_safe_key. The destination is silently
+        overwritten if it already exists — the caller must guard against that.
+        """
+        bucket = bucket or self.settings.s3_bucket
+        paths.assert_safe_key(source_key)
+        paths.assert_safe_key(dest_key)
+        try:
+            self.client.copy_object(
+                bucket,
+                dest_key,
+                CopySource(bucket, source_key),
+            )
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject", "NotFound"}:
+                raise ObjectNotFoundError(
+                    f"copy source does not exist: {source_key}"
+                ) from exc
+            raise StorageError(
+                f"copy failed {source_key} -> {dest_key}: {exc.code}"
+            ) from exc
+        log.info("copied %s -> %s", source_key, dest_key)
+
+    def remove_object(self, key: str, bucket: str | None = None) -> None:
+        """Delete a single object.  Idempotent — no error if the key is absent."""
+        bucket = bucket or self.settings.s3_bucket
+        paths.assert_safe_key(key)
+        try:
+            self.client.remove_object(bucket, key)
+        except S3Error as exc:
+            # MinIO remove_object is already idempotent, but defensive.
+            if exc.code not in {"NoSuchKey", "NoSuchObject", "NotFound"}:
+                raise StorageError(f"delete failed for {key}: {exc.code}") from exc
+        log.info("removed %s", key)
 
     # --- read --------------------------------------------------------------
 

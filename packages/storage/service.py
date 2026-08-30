@@ -215,6 +215,7 @@ def retention_policy() -> dict:
         "tmp_days": policy.tmp_days,
         "uploads_days": policy.uploads_days,
         "asset_days": policy.asset_days,
+        "render_staging_hours": policy.render_staging_hours,
         "max_deletions_per_run": policy.max_deletions_per_run,
         "signed_url_ttl_s": {
             "preview": settings.ttl_preview_s,

@@ -208,6 +208,35 @@ def render_prefix(project_id: str, render_id: str) -> str:
     return _category_key(project_id, "renders", render_id)
 
 
+# --- render staging (two-phase publish) ------------------------------------
+
+STAGING_SEGMENT = ".staging"
+
+
+def render_staging_prefix(project_id: str, render_id: str) -> str:
+    """projects/{id}/renders/{render_id}/.staging
+
+    All files for a render are uploaded here first, then copied to their final
+    paths in one publish step. The manifest is copied last and acts as the
+    commit marker — a render is considered published iff its manifest exists at
+    the final path.
+    """
+    validate_id(project_id, "project_id")
+    validate_id(render_id, "render_id")
+    key = posixpath.join(
+        "projects", project_id, "renders", render_id, STAGING_SEGMENT
+    )
+    return assert_safe_key(key)
+
+
+def render_staging_key(project_id: str, render_id: str, filename: str) -> str:
+    """projects/{id}/renders/{render_id}/.staging/<filename>"""
+    classify_extension(filename)
+    prefix = render_staging_prefix(project_id, render_id)
+    key = posixpath.join(prefix, posixpath.basename(filename))
+    return assert_safe_key(key)
+
+
 # --- local workspace (render worker) ---------------------------------------
 
 

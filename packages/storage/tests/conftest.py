@@ -108,6 +108,20 @@ class FakeStore:
             raise ImmutableRenderError(f"Render object already exists: {key}")
         return self.put_file(key, local_path, kind=kind)
 
+    def copy_object(self, source_key: str, dest_key: str, bucket: str | None = None) -> None:
+        """Server-side copy within the bucket.  Mimics MinIO: silently
+        overwrites the destination if it exists."""
+        paths.assert_safe_key(source_key)
+        paths.assert_safe_key(dest_key)
+        if source_key not in self.objects:
+            raise ObjectNotFoundError(f"copy source does not exist: {source_key}")
+        self.objects[dest_key] = self.objects[source_key]
+
+    def remove_object(self, key: str, bucket: str | None = None) -> None:
+        """Delete a single object.  Idempotent — silent if the key is absent."""
+        paths.assert_safe_key(key)
+        self.objects.pop(key, None)
+
     def download_to(self, key: str, dest_path: str, bucket: str | None = None) -> str:
         if key not in self.objects:
             raise ObjectNotFoundError(f"No such object: {key}")

@@ -23,6 +23,10 @@ def days_ago(n: float) -> datetime:
 # --- category detection -----------------------------------------------------
 
 
+def hours_ago(n: float) -> datetime:
+    return NOW - timedelta(hours=n)
+
+
 @pytest.mark.parametrize(
     "key,expected",
     [
@@ -31,6 +35,9 @@ def days_ago(n: float) -> datetime:
         ("projects/p1/source/script.txt", "source"),
         ("projects/p1/audio/narration.wav", "audio"),
         ("projects/p1/manifests/r_1/manifest.json", "manifests"),
+        ("projects/p1/renders/r_1/.staging/final.mp4", "render_staging"),
+        ("projects/p1/renders/r_1/.staging/thumb.jpg", "render_staging"),
+        ("projects/p1/renders/r_1/.staging/manifest.json", "render_staging"),
         ("not-a-project-key", None),
         ("projects/p1", None),
         ("assets/9f", None),
@@ -150,3 +157,43 @@ def test_policy_defaults_match_approved_values():
     assert p.tmp_days == 1
     assert p.uploads_days == 7
     assert p.asset_days == 30
+    assert p.render_staging_hours == 24
+
+
+# --- render staging retention -----------------------------------------------
+
+
+def test_staging_key_is_recognised_as_render_staging():
+    key = "projects/p1/renders/r_1/.staging/final.mp4"
+    assert retention.category_of(key) == "render_staging"
+
+
+def test_staging_keys_are_cleanable_not_protected():
+    key = "projects/p1/renders/r_1/.staging/final.mp4"
+    assert retention.is_protected(key) is False
+
+
+def test_staging_uses_hour_based_rule_not_day_based():
+    key = "projects/p1/renders/r_1/.staging/final.mp4"
+    # 25 hours old, above the 24h default — should be deleted
+    assert retention.should_delete(key, hours_ago(25), NOW, POLICY, frozenset()) is True
+    # 23 hours old, below the threshold — should be kept
+    assert retention.should_delete(key, hours_ago(23), NOW, POLICY, frozenset()) is False
+
+
+def test_staging_at_exact_boundary_is_kept():
+    key = "projects/p1/renders/r_1/.staging/final.mp4"
+    assert retention.should_delete(key, hours_ago(24), NOW, POLICY, frozenset()) is False
+
+
+def test_finished_render_is_still_protected_after_staging_change():
+    """Adding the staging category must not weaken protection of published renders."""
+    key = "projects/p1/renders/r_1/final.mp4"
+    assert retention.is_protected(key) is True
+    assert retention.should_delete(key, days_ago(9999), NOW, POLICY, frozenset()) is False
+
+
+def test_staged_asset_key_is_still_cleanable_at_30_days():
+    """Adding staging must not break the existing asset cleanup path."""
+    key = "assets/9f/a_9f2c4e1b7d0a5c33.mp4"
+    assert retention.should_delete(key, days_ago(31), NOW, POLICY, frozenset()) is True

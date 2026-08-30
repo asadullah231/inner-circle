@@ -41,7 +41,9 @@ PROTECTED_CATEGORIES = frozenset({"renders", "thumbs", "manifests", "captions"})
 
 # Categories the cleanup job is allowed to consider.
 # "assets" here refers to the global assets/ prefix, not a project subfolder.
-CLEANABLE_CATEGORIES = frozenset({"assets", "source", "audio"})
+# "render_staging" covers the .staging/ prefix under a render — crash residue
+# that is safe and correct to clean up after 24 hours.
+CLEANABLE_CATEGORIES = frozenset({"assets", "source", "audio", "render_staging"})
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ class RetentionPolicy:
     tmp_days: int = 1
     uploads_days: int = 7
     asset_days: int = 30
+    render_staging_hours: int = 24
     max_deletions_per_run: int = 500
 
     @classmethod
@@ -57,6 +60,7 @@ class RetentionPolicy:
             tmp_days=getattr(settings, "retention_tmp_days", 1),
             uploads_days=getattr(settings, "retention_uploads_days", 7),
             asset_days=getattr(settings, "retention_asset_days", 30),
+            render_staging_hours=getattr(settings, "retention_render_staging_hours", 24),
             max_deletions_per_run=getattr(settings, "retention_max_deletions", 500),
         )
 
@@ -67,8 +71,9 @@ class RetentionPolicy:
 def category_of(key: str) -> Optional[str]:
     """Classify a storage key, or return None if the shape is unrecognised.
 
-    assets/9f/a_9f2c4e1b.mp4              ->  "assets"
-    projects/proj_123/renders/r_1/f.mp4   ->  "renders"
+    assets/9f/a_9f2c4e1b.mp4                                 ->  "assets"
+    projects/proj_123/renders/r_1/final.mp4                   ->  "renders"
+    projects/proj_123/renders/r_1/.staging/final.mp4          ->  "render_staging"
 
     Assets are global rather than project-scoped, because dedup is global.
     Everything else lives under a project.
@@ -82,6 +87,14 @@ def category_of(key: str) -> Optional[str]:
         return "assets" if len(parts) == 3 else None
 
     if parts[0] == "projects" and len(parts) >= 4:
+        # Detect .staging/ under a render prefix:
+        # projects/{id}/renders/{render_id}/.staging/{filename}
+        if (
+            len(parts) >= 6
+            and parts[2] == "renders"
+            and parts[4] == ".staging"
+        ):
+            return "render_staging"
         return parts[2]
 
     return None
@@ -111,6 +124,15 @@ def age_days(last_modified: datetime, now: datetime) -> float:
     return (now - last_modified).total_seconds() / 86400.0
 
 
+def age_hours(last_modified: datetime, now: datetime) -> float:
+    """Age of an object in hours. Both timestamps must be timezone-aware."""
+    if last_modified.tzinfo is None:
+        last_modified = last_modified.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return (now - last_modified).total_seconds() / 3600.0
+
+
 def should_delete(
     key: str,
     last_modified: datetime,
@@ -124,11 +146,17 @@ def should_delete(
       * the key is not protected
       * the key is not currently referenced by any project
       * the object is older than the retention window
+
+    Render staging files use an hour-based window (default 24 h) — they are
+    crash residue, not user data, and should not linger for 30 days.
     """
     if is_protected(key):
         return False
     if key in in_use_keys:
         return False
+    category = category_of(key)
+    if category == "render_staging":
+        return age_hours(last_modified, now) > policy.render_staging_hours
     return age_days(last_modified, now) > policy.asset_days
 
 
