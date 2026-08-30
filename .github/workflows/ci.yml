@@ -27,13 +27,79 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install dev dependencies (if present)
+      - name: Install dependencies
         run: |
+          pip install pytest
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-      - name: Run tests (if any exist)
+          if [ -f packages/storage/requirements.txt ]; then pip install -r packages/storage/requirements.txt; fi
+      - name: Run tests
+        run: pytest -v
+
+  storage-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Start MinIO
         run: |
-          if [ -d tests ] && [ -n "$(find tests -name 'test_*.py' 2>/dev/null)" ]; then
-            python -m unittest discover -s tests -t . -v
-          else
-            echo "no tests yet — will land starting M1"
-          fi
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=avgadmin \
+            -e MINIO_ROOT_PASSWORD=avgadmin-integration-secret \
+            minio/minio server /data
+      - name: Wait for MinIO to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then
+              echo "minio ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "minio did not become ready"; docker logs minio; exit 1
+      - name: Install dependencies
+        run: pip install -r packages/storage/requirements.txt
+      - name: Run storage integration tests
+        env:
+          RUN_STORAGE_INTEGRATION: "1"
+          S3_ENDPOINT: http://127.0.0.1:9000
+          S3_ACCESS_KEY: avgadmin
+          S3_SECRET_KEY: avgadmin-integration-secret
+          S3_SECURE: "false"
+        run: pytest -v -m integration packages/storage/tests/test_integration.py
+
+  storage-db-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: avg
+          POSTGRES_PASSWORD: avg-integration-secret
+          POSTGRES_DB: avg_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U avg -d avg_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install -r packages/storage/requirements.txt
+          pip install -r packages/storage/requirements-db.txt
+      - name: Apply the assets migration
+        env:
+          PGPASSWORD: avg-integration-secret
+        run: psql -h localhost -U avg -d avg_test -v ON_ERROR_STOP=1 -f packages/storage/tests/fixtures/assets_schema.sql
+      - name: Run DB integration tests
+        env:
+          RUN_STORAGE_DB_INTEGRATION: "1"
+          DATABASE_URL: postgresql://avg:avg-integration-secret@localhost:5432/avg_test
+        run: pytest -v -m db_integration packages/storage/tests/test_db_integration.py
