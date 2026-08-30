@@ -1,0 +1,7 @@
+# Database driver for the assets adapter (packages/storage/db.py).
+#
+# Kept SEPARATE from requirements.txt on purpose: the ordinary unit-test job
+# installs only requirements.txt, so "the storage unit tests run with no DB
+# driver installed" is enforced by CI, not just by convention. Only the
+# storage-db-integration job installs this file.
+psycopg[binary]==3.2.3
