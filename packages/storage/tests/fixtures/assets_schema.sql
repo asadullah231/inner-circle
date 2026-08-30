@@ -62,8 +62,7 @@ ALTER TABLE assets
     ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 CREATE INDEX IF NOT EXISTS idx_assets_last_used_at
-    ON assets (last_used_at)
-    WHERE last_used_at < now() - interval '30 days';
+    ON assets (last_used_at);
 
 -- --- Mubashir's renders migration (migration_renders.sql) -----------------
 
