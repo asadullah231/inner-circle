@@ -184,7 +184,69 @@ def test_list_in_use_returns_keys_and_joins_beats():
     assert "JOIN beats" in conn.last_sql and "DISTINCT" in conn.last_sql
 
 
-def test_touch_last_used_is_a_noop_stub():
+def test_touch_last_used_executes_update():
     conn = FakeConn()
-    assert db.touch_asset_last_used(conn, uuid4()) is None
-    assert conn.calls == []  # the stub must not hit the DB until last_used_at exists
+    aid = uuid4()
+    db.touch_asset_last_used(conn, aid)
+    assert len(conn.calls) == 1
+    sql, params = conn.calls[0]
+    assert "UPDATE assets SET last_used_at = now()" in sql
+    assert params == (aid,)
+
+
+# --- recently used ----------------------------------------------------------
+
+
+def test_list_recently_used_returns_keys_and_uses_days_param():
+    conn = FakeConn(rows=[("assets/aa/a_1.mp4",), ("assets/bb/a_2.mp4",)])
+    keys = db.list_recently_used_asset_keys(conn, days=30)
+    assert keys == ["assets/aa/a_1.mp4", "assets/bb/a_2.mp4"]
+    assert "last_used_at" in conn.last_sql
+    assert conn.last_params == (30,)
+
+
+def test_list_recently_used_default_days_is_30():
+    conn = FakeConn(rows=[])
+    db.list_recently_used_asset_keys(conn)
+    assert conn.last_params == (30,)
+
+
+# --- insert render ----------------------------------------------------------
+
+
+def test_insert_render_builds_correct_sql():
+    conn = FakeConn(row=("r_20260830T120000Z",))
+    is_new = db.insert_render(
+        conn,
+        render_id="r_20260830T120000Z",
+        project_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        mp4_key="projects/p1/renders/r_20260830T120000Z/final.mp4",
+        manifest_key="projects/p1/manifests/r_20260830T120000Z/manifest.json",
+        thumbnail_key="projects/p1/thumbs/r_20260830T120000Z/thumb.jpg",
+        captions_key=None,
+    )
+    assert is_new is True
+    sql = conn.last_sql
+    assert "INSERT INTO renders" in sql
+    assert "ON CONFLICT (render_id) DO NOTHING" in sql
+    assert "RETURNING render_id" in sql
+    params = conn.last_params
+    assert params[0] == "r_20260830T120000Z"  # render_id
+    assert params[1] == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"  # project_id
+    assert params[2] == "projects/p1/renders/r_20260830T120000Z/final.mp4"  # mp4_key
+    assert params[3] == "projects/p1/thumbs/r_20260830T120000Z/thumb.jpg"  # thumbnail_key
+    assert params[4] is None  # captions_key
+    assert params[5] == "projects/p1/manifests/r_20260830T120000Z/manifest.json"  # manifest_key
+
+
+def test_insert_render_returns_false_on_conflict():
+    # ON CONFLICT DO NOTHING returns no row -> fetchone() returns None -> is_new=False
+    conn = FakeConn(row=None)
+    is_new = db.insert_render(
+        conn,
+        render_id="r_dup",
+        project_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        mp4_key="k.mp4",
+        manifest_key="k.json",
+    )
+    assert is_new is False

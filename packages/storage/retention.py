@@ -23,8 +23,30 @@ Safety rules, in order of importance:
     * Renders, thumbnails, manifests and captions are NEVER deleted here.
       They are protected by prefix, checked before anything else.
     * The job is dry-run by default. Deleting requires an explicit flag.
+    * Real deletions (dry_run=False) require a DB connection so the protected
+      set is built from the database, not from a caller-supplied list.
     * A single run will not delete more than max_deletions objects, so a bad
       in-use list cannot wipe the bucket in one go.
+
+Race window (DB-authoritative mode):
+
+    There is a narrow race between reading the protected set from the database
+    and scanning the object store.  An asset could be dereferenced (beat
+    reassigned, last_used_at aged past the window) between the DB query and
+    the S3 scan, causing it to be deleted in the same run where it stopped
+    being protected.
+
+    This is accepted because:
+      1. The 30-day retention window means the asset must have been unused for
+         30 days AND dereferenced in the last few seconds — an extremely narrow
+         overlap for a 30-day-old asset.
+      2. Assets are content-addressed: re-downloading the same file from the
+         provider produces the same key, so a "lost" asset is recoverable.
+      3. Closing this race completely would require a transactional lock
+         spanning both Postgres and S3/MinIO, which neither supports atomically.
+
+    run_cleanup logs every deleted key at INFO level before removing it, so
+    any accidental deletion is traceable.
 """
 
 from __future__ import annotations
@@ -238,22 +260,66 @@ def list_cleanable_objects(store) -> list[tuple[str, datetime]]:
     return results
 
 
+def build_protected_set(conn, policy: RetentionPolicy) -> frozenset[str]:
+    """Build the DB-authoritative set of asset keys that must not be deleted.
+
+    Unions two sources from the database:
+      1. In-use: assets currently referenced by at least one beat
+      2. Recently-used: assets with last_used_at within policy.asset_days
+
+    Render, thumbnail, manifest, and caption keys are not included — they are
+    already protected by is_protected() via their key prefix, independently of
+    the in-use set.
+
+    This replaces the caller-supplied in_use_keys list.  Using the DB means
+    the protected set is always complete and current (within the race window
+    documented at module level).
+    """
+    from . import db
+
+    in_use = db.list_in_use_asset_keys(conn)
+    recently_used = db.list_recently_used_asset_keys(conn, days=policy.asset_days)
+
+    combined = frozenset(in_use) | frozenset(recently_used)
+    log.info(
+        "protected set: %d in-use + %d recently-used = %d unique keys",
+        len(in_use), len(recently_used), len(combined),
+    )
+    return combined
+
+
 def run_cleanup(
     store,
     policy: RetentionPolicy,
     in_use_keys: Iterable[str] = (),
     dry_run: bool = True,
     now: Optional[datetime] = None,
+    conn=None,
 ) -> dict:
     """Find expired assets and, unless this is a dry run, delete them.
 
-    in_use_keys must be the set of storage keys still referenced by a project.
-    Until the database integration lands this is passed in by the caller; an
-    empty set means nothing is treated as in use, which is why dry_run
-    defaults to True.
+    When ``conn`` is provided (DB-authoritative mode), the protected set is
+    built from the database via build_protected_set() and ``in_use_keys`` is
+    ignored.  When ``conn`` is None, ``in_use_keys`` is used as-is.
+
+    Real deletions (dry_run=False) require a DB connection so the protected
+    set is always complete and current.  Without one, the function raises —
+    an incomplete caller-supplied list could delete assets still in use.
     """
+    if not dry_run and conn is None:
+        raise ValueError(
+            "run_cleanup(dry_run=False) requires a DB connection (conn=...) "
+            "so the protected set is built from the database. "
+            "Pass conn or use dry_run=True."
+        )
+
+    if conn is not None:
+        protected = build_protected_set(conn, policy)
+    else:
+        protected = frozenset(in_use_keys)
+
     candidates = list_cleanable_objects(store)
-    expired = select_expired(candidates, policy, in_use_keys, now)
+    expired = select_expired(candidates, policy, protected, now)
 
     deleted: list[str] = []
     failed: list[str] = []
@@ -265,10 +331,10 @@ def run_cleanup(
             if is_protected(key):
                 log.error("refusing to delete protected key: %s", key)
                 continue
+            log.info("retention deleting %s", key)
             try:
                 store.client.remove_object(store.settings.s3_bucket, key)
                 deleted.append(key)
-                log.info("retention deleted %s", key)
             except Exception as exc:  # noqa: BLE001 - one failure must not stop the run
                 failed.append(key)
                 log.warning("retention failed to delete %s: %s", key, exc)

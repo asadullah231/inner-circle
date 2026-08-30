@@ -246,7 +246,7 @@ def test_put_render_file_is_write_once(store, local_file):
 # --- retention delete path --------------------------------------------------
 
 
-def test_cleanup_deletes_unused_assets_but_never_renders(store, local_file):
+def test_cleanup_deletes_unused_assets_but_never_renders(store, local_file, monkeypatch):
     # asset_days=-1 makes every real object "older than the window", so age is
     # not what this test is about -- protection, the in-use guard, and the real
     # remove_object call are.
@@ -265,8 +265,15 @@ def test_cleanup_deletes_unused_assets_but_never_renders(store, local_file):
         "it_proj", render_id, "final.mp4", local_file("c.mp4", b"ccc"), kind="video"
     )
 
+    # DB-authoritative mode requires conn; mock build_protected_set for this
+    # MinIO-only test so the delete path is exercised without a real Postgres.
+    monkeypatch.setattr(
+        retention, "build_protected_set",
+        lambda conn, policy: frozenset({kept_asset_key}),
+    )
+
     report = retention.run_cleanup(
-        store, policy, in_use_keys=[kept_asset_key], dry_run=False
+        store, policy, dry_run=False, conn=object(),
     )
 
     assert asset_key in report["keys"]  # unused + expired -> deleted

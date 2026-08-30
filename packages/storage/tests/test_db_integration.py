@@ -69,7 +69,7 @@ def _schema():
 @pytest.fixture
 def conn(_schema):
     connection = _connect()
-    connection.execute("TRUNCATE beats, assets RESTART IDENTITY CASCADE")
+    connection.execute("TRUNCATE renders, beats, assets, projects RESTART IDENTITY CASCADE")
     connection.commit()
     try:
         yield connection
@@ -255,3 +255,105 @@ def test_concurrent_inserts_same_hash_return_same_id(conn):
     assert len({asset_id for asset_id, _ in results}) == 1, "different ids returned"
     assert sum(1 for _, is_new in results if is_new) == 1, "exactly one should be new"
     assert _count_assets(conn) == 1
+
+
+# --- touch_asset_last_used -------------------------------------------------
+
+
+def test_touch_last_used_updates_column(conn):
+    h = _hash("touch")
+    asset_id, _ = db.insert_or_get_asset(conn, _staged(h), _provider())
+    conn.commit()
+
+    # Read the initial last_used_at.
+    row = conn.execute(
+        "SELECT last_used_at FROM assets WHERE id = %s", (asset_id,)
+    ).fetchone()
+    before = row[0]
+
+    # Bump it.
+    db.touch_asset_last_used(conn, asset_id)
+    conn.commit()
+
+    row2 = conn.execute(
+        "SELECT last_used_at FROM assets WHERE id = %s", (asset_id,)
+    ).fetchone()
+    after = row2[0]
+    assert after >= before
+
+
+# --- list_recently_used_asset_keys -----------------------------------------
+
+
+def test_recently_used_returns_recent_assets_only(conn):
+    recent_hash = _hash("recent")
+    old_hash = _hash("old")
+    db.insert_or_get_asset(conn, _staged(recent_hash), _provider())
+    db.insert_or_get_asset(
+        conn,
+        _staged(old_hash, storage_key="assets/ol/a_old.mp4"),
+        _provider(),
+    )
+    # Backdate the old asset's last_used_at to 60 days ago.
+    conn.execute(
+        "UPDATE assets SET last_used_at = now() - interval '60 days' "
+        "WHERE file_hash = %s",
+        (old_hash,),
+    )
+    conn.commit()
+
+    keys = db.list_recently_used_asset_keys(conn, days=30)
+    assert _staged(recent_hash)["storage_key"] in keys
+    assert "assets/ol/a_old.mp4" not in keys
+
+
+# --- insert_render ---------------------------------------------------------
+
+
+def _add_project(conn) -> UUID:
+    """Insert a minimal project row and return its id."""
+    row = conn.execute(
+        "INSERT INTO projects (id) VALUES (gen_random_uuid()) RETURNING id"
+    ).fetchone()
+    return row[0]
+
+
+def test_insert_render_new_row(conn):
+    project_id = _add_project(conn)
+    is_new = db.insert_render(
+        conn,
+        render_id="r_20260830T120000Z",
+        project_id=str(project_id),
+        mp4_key="projects/p1/renders/r_20260830T120000Z/final.mp4",
+        manifest_key="projects/p1/manifests/r_20260830T120000Z/manifest.json",
+        thumbnail_key="projects/p1/thumbs/r_20260830T120000Z/thumb.jpg",
+    )
+    conn.commit()
+    assert is_new is True
+
+    row = conn.execute(
+        "SELECT render_id, mp4_key, thumbnail_key, captions_key, manifest_key "
+        "FROM renders WHERE render_id = %s",
+        ("r_20260830T120000Z",),
+    ).fetchone()
+    assert row[0] == "r_20260830T120000Z"
+    assert row[1] == "projects/p1/renders/r_20260830T120000Z/final.mp4"
+    assert row[2] == "projects/p1/thumbs/r_20260830T120000Z/thumb.jpg"
+    assert row[3] is None  # captions_key
+    assert row[4] == "projects/p1/manifests/r_20260830T120000Z/manifest.json"
+
+
+def test_insert_render_idempotent(conn):
+    project_id = _add_project(conn)
+    args = dict(
+        render_id="r_idem",
+        project_id=str(project_id),
+        mp4_key="k.mp4",
+        manifest_key="k.json",
+    )
+    assert db.insert_render(conn, **args) is True
+    conn.commit()
+    assert db.insert_render(conn, **args) is False
+    conn.commit()
+    count = conn.execute("SELECT count(*) FROM renders").fetchone()[0]
+    assert count == 1

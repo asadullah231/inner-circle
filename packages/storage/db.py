@@ -103,6 +103,30 @@ _IN_USE_SQL = (
     "WHERE a.storage_key IS NOT NULL"
 )
 
+# --- SQL for last_used_at ----------------------------------------------------
+
+_TOUCH_LAST_USED_SQL = "UPDATE assets SET last_used_at = now() WHERE id = %s"
+
+# Assets whose last_used_at is within the retention window.  Combined with
+# list_in_use_asset_keys() this forms the complete DB-authoritative protected
+# set for retention cleanup.
+_RECENTLY_USED_SQL = (
+    "SELECT DISTINCT a.storage_key "
+    "FROM assets a "
+    "WHERE a.storage_key IS NOT NULL "
+    "AND a.last_used_at >= now() - %s * interval '1 day'"
+)
+
+# --- SQL for renders ---------------------------------------------------------
+
+_INSERT_RENDER_SQL = (
+    "INSERT INTO renders "
+    "(render_id, project_id, mp4_key, thumbnail_key, captions_key, manifest_key) "
+    "VALUES (%s, %s, %s, %s, %s, %s) "
+    "ON CONFLICT (render_id) DO NOTHING "
+    "RETURNING render_id"
+)
+
 
 # --- helpers ----------------------------------------------------------------
 
@@ -209,16 +233,46 @@ def list_in_use_asset_keys(conn: "Connection") -> list[str]:
 
 
 def touch_asset_last_used(conn: "Connection", asset_id: UUID) -> None:
-    """Bump a last_used_at timestamp for the '30 days after last use' rule.
+    """Bump last_used_at to now() for the '30 days after last use' rule.
 
-    TODO(mubashir): the assets table has no last_used_at column yet, and it is
-    not ours to add. Two options are on the table (Task 2 brief, Part 5.1): add
-    `assets.last_used_at TIMESTAMPTZ` and bump it from the beat-attach code, or
-    derive MAX(beats.updated_at). Until that decision lands this is a no-op, so
-    call sites can be wired now and start working when the column exists.
-    list_in_use_asset_keys already protects in-use assets regardless of age, so
-    nothing is deleted wrongly in the meantime.
+    Call this whenever an asset is attached to a beat or otherwise consumed.
+    The retention scan uses last_used_at to decide which unreferenced assets
+    are safe to delete.
     """
-    # Intentionally does not touch the database yet.
-    log.debug("touch_asset_last_used stub (no last_used_at column yet) id=%s", asset_id)
-    return None
+    conn.execute(_TOUCH_LAST_USED_SQL, (asset_id,))
+    log.debug("touched last_used_at for asset %s", asset_id)
+
+
+def list_recently_used_asset_keys(conn: "Connection", days: int = 30) -> list[str]:
+    """Return storage keys of assets used within the last ``days`` days.
+
+    Combined with list_in_use_asset_keys(), this forms the DB-authoritative
+    protected set for retention.  An asset in either list is never deleted.
+    """
+    return [r[0] for r in conn.execute(_RECENTLY_USED_SQL, (days,)).fetchall()]
+
+
+def insert_render(
+    conn: "Connection",
+    render_id: str,
+    project_id: str,
+    mp4_key: str,
+    manifest_key: str,
+    thumbnail_key: str | None = None,
+    captions_key: str | None = None,
+) -> bool:
+    """Record a published render.  Returns True if this was a new insert.
+
+    Idempotent: a second call with the same render_id is a no-op (returns
+    False).  The render_id is the primary key — it is the storage layer's
+    identifier and the only identifier.
+
+    Does not commit; the caller owns the transaction.
+    """
+    row = conn.execute(
+        _INSERT_RENDER_SQL,
+        (render_id, project_id, mp4_key, thumbnail_key, captions_key, manifest_key),
+    ).fetchone()
+    is_new = row is not None
+    log.info("render upsert render_id=%s is_new=%s", render_id, is_new)
+    return is_new

@@ -197,3 +197,79 @@ def test_staged_asset_key_is_still_cleanable_at_30_days():
     """Adding staging must not break the existing asset cleanup path."""
     key = "assets/9f/a_9f2c4e1b7d0a5c33.mp4"
     assert retention.should_delete(key, days_ago(31), NOW, POLICY, frozenset()) is True
+
+
+# --- build_protected_set ---------------------------------------------------
+
+
+def test_build_protected_set_unions_in_use_and_recently_used(monkeypatch):
+    from packages.storage import db
+
+    monkeypatch.setattr(
+        db, "list_in_use_asset_keys", lambda conn: ["assets/aa/a_1.mp4"]
+    )
+    monkeypatch.setattr(
+        db,
+        "list_recently_used_asset_keys",
+        lambda conn, days: ["assets/bb/a_2.mp4"],
+    )
+
+    result = retention.build_protected_set(object(), POLICY)
+    assert result == frozenset({"assets/aa/a_1.mp4", "assets/bb/a_2.mp4"})
+
+
+def test_build_protected_set_deduplicates_overlap(monkeypatch):
+    from packages.storage import db
+
+    shared = "assets/cc/a_shared.mp4"
+    monkeypatch.setattr(db, "list_in_use_asset_keys", lambda conn: [shared])
+    monkeypatch.setattr(
+        db, "list_recently_used_asset_keys", lambda conn, days: [shared]
+    )
+
+    result = retention.build_protected_set(object(), POLICY)
+    assert result == frozenset({shared})
+
+
+def test_build_protected_set_passes_asset_days_to_db(monkeypatch):
+    from packages.storage import db
+
+    captured = {}
+    monkeypatch.setattr(db, "list_in_use_asset_keys", lambda conn: [])
+    monkeypatch.setattr(
+        db,
+        "list_recently_used_asset_keys",
+        lambda conn, days: (captured.update(days=days), [])[1],
+    )
+
+    policy = RetentionPolicy(asset_days=45)
+    retention.build_protected_set(object(), policy)
+    assert captured["days"] == 45
+
+
+# --- run_cleanup conn requirement ------------------------------------------
+
+
+def test_run_cleanup_refuses_dry_run_false_without_conn():
+    with pytest.raises(ValueError, match="DB connection"):
+        retention.run_cleanup(object(), POLICY, dry_run=False)
+
+
+def test_run_cleanup_allows_dry_run_true_without_conn():
+    """Dry runs work without a DB connection — they use in_use_keys."""
+    # No store interaction needed; select_expired on empty candidates returns [].
+    # We need a store with a client that has list_objects.
+    class FakeClient:
+        def list_objects(self, *a, **kw):
+            return []
+
+    class FakeRetentionStore:
+        class settings:
+            s3_bucket = "b"
+        client = FakeClient()
+
+    result = retention.run_cleanup(
+        FakeRetentionStore(), POLICY, in_use_keys=[], dry_run=True
+    )
+    assert result["dry_run"] is True
+    assert result["expired"] == 0
