@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime, timezone
 
 from . import hashing, paths
@@ -236,17 +237,19 @@ def package_render(
         staging_manifest = paths.render_staging_key(
             project_id, render_id, "manifest.json"
         )
-        tmp = os.path.join(
-            store.settings.workspace_root, f"{render_id}_manifest.json"
-        )
-        os.makedirs(os.path.dirname(tmp), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(manifest, handle, indent=2)
-        store.put_file(
-            staging_manifest, tmp, kind="text",
-            content_type="application/json", overwrite=True,
-        )
-        hashing.safe_unlink(tmp)
+        # Write the manifest to a system temp file, not to WORKSPACE_ROOT.
+        # The workspace is owned by the render worker; package_render should
+        # not depend on it being writable.
+        fd, tmp = tempfile.mkstemp(prefix="avg_manifest_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle, indent=2)
+            store.put_file(
+                staging_manifest, tmp, kind="text",
+                content_type="application/json", overwrite=True,
+            )
+        finally:
+            hashing.safe_unlink(tmp)
         staged["manifest"] = staging_manifest
 
     # --- phase 2: publish (copy staging -> final, then delete staging) -------
